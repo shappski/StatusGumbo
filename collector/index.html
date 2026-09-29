@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StatusGumbo</title>
+<style>
+  :root {
+    --bg: #0e1116; --card: #171b22; --line: #262c36;
+    /* The card outline, and nothing else. --line is also the unfilled track
+       of the context bar and the border of the host badge, so raising it to
+       reach this contrast would have brightened the empty half of every
+       progress bar — making a 20% bar read as fuller than 20%. A separate
+       variable is what lets the outline get louder while the bar stays
+       honest.
+
+       #454f60 is 2.29:1 against --bg, where --line is 1.35:1. That is the
+       lever worth pulling here: down near black, luminance is compressed, so
+       lifting the card *fill* three steps buys only 1.10:1 -> 1.28:1 while
+       lifting the *border* the same three steps buys 1.35:1 -> 2.29:1. On a
+       phone at low brightness the old edge was not dim, it was absent. */
+    --edge: #454f60;
+    --fg: #e6edf3; --dim: #8b949e;
+    --green: #3fb950; --yellow: #d29922; --red: #f85149;
+    /* Where a session runs. Hues the status colours above do not use, so an
+       edge can never be read as a verdict: green, yellow and red already
+       mean something on this page, and a laptop is not "fine". */
+    --laptop: #58a6ff; --coder: #bc8cff; --cloud: #39d0d8; --other: #8b949e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px; background: var(--bg); color: var(--fg);
+    font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  h1 { font-size: 13px; color: var(--dim); font-weight: 600; margin: 0 0 10px; }
+  .card {
+    background: var(--card); border: 1px solid var(--edge);
+    border-radius: 8px; padding: 10px 12px;
+    /* Was 8px, which is inside the range of this card's own internal gaps
+       (4px, 6px, 7px). Proximity is the strongest grouping cue the eye has,
+       and at 8px it said nothing: a card's rows were spaced like the boundary
+       between cards, so there was no reason to bind one group over another.
+       16px is 2.3x the largest internal gap, which is what makes a card read
+       as one object. */
+    margin-bottom: 16px;
+  }
+  /* One per host, above that host's cards. Its 20px top margin exceeds the
+     16px between cards, so the gap between two hosts is larger than the gap
+     between two sessions — the grouping has to be visible in the spacing, not
+     only in the words. */
+  .host {
+    font-size: 12px; font-weight: 700; color: var(--dim);
+    letter-spacing: 0.04em; margin: 20px 0 8px;
+    padding-bottom: 4px; border-bottom: 1px solid var(--line);
+  }
+  /* Where a card runs, on the card itself: on a phone the heading naming the
+     machine is usually scrolled out of sight, and the edge is what is left
+     to answer "is this the laptop, the VM or the cloud?" at a glance. The
+     heading carries the same answer as a word, so the colour is never the
+     only way to tell. A host that did not say what it is gets no edge. */
+  .at-laptop { border-left: 4px solid var(--laptop); }
+  .at-coder { border-left: 4px solid var(--coder); }
+  .at-cloud { border-left: 4px solid var(--cloud); }
+  .at-other { border-left: 4px solid var(--other); }
+  .host .where { font-weight: 400; margin-left: 6px; }
+  .host.at-laptop, .host.at-coder, .host.at-cloud, .host.at-other { border-left: 0; }
+  .host.at-laptop .where { color: var(--laptop); }
+  .host.at-coder .where { color: var(--coder); }
+  .host.at-cloud .where { color: var(--cloud); }
+  .host.at-other .where { color: var(--other); }
+  .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .proj { font-weight: 700; }
+  .branch { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { color: var(--dim); font-size: 12px; margin-top: 4px; }
+  .badge {
+    font-size: 11px; border: 1px solid var(--line); border-radius: 4px;
+    padding: 1px 5px; color: var(--dim);
+  }
+  .bar { height: 5px; background: var(--line); border-radius: 3px; margin: 7px 0 3px; }
+  .bar > div { height: 100%; border-radius: 3px; }
+  .pct { font-weight: 700; }
+  .green { color: var(--green); } .yellow { color: var(--yellow); } .red { color: var(--red); }
+  .alert { border-color: var(--red); color: var(--red); }
+  /* height is not decoration here, it is the missing half of a dimension.
+     The sparkline is emitted as width="100%" over a `0 0 240 28` viewBox with
+     preserveAspectRatio="none" and no height, so the browser fell back to the
+     viewBox's 240:28 ratio and scaled the height with the *viewport width* —
+     28px at the 240px it was drawn for, ~45px on a phone, ~180px on a laptop,
+     where it opened a void inside the card taller than the card's own
+     content. Pinning it to the viewBox's own height makes the vertical scale
+     1:1 and the card the same height on every screen; the horizontal stretch
+     is what preserveAspectRatio="none" is there for and is left alone. */
+  svg { display: block; height: 28px; }
+  /* The line and how much time it covers, on one row. min-width:0 is what
+     lets the svg actually shrink: a flex item's floor is its content size,
+     not zero, so without it the caption would be pushed off the card on a
+     narrow screen rather than the line giving up the width. */
+  .spark { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .spark > svg { flex: 1; min-width: 0; }
+  .empty { color: var(--dim); text-align: center; padding: 24px 0; }
+  /* A card that opens on claude.ai is a link, and must still look like a
+     card rather than like link text. */
+  a.card { display: block; color: inherit; text-decoration: none; }
+  /* What a cloud session says it is doing or waiting for. Written by the
+     session in prose and of any length, so it is clamped rather than
+     allowed to set the card's height. */
+  .note {
+    overflow: hidden; display: -webkit-box;
+    -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  #stamp { margin: 0 0 10px; }
+</style>
+</head>
+<body>
+<!-- Written by the server, not by script: an offline copy of this page runs
+     no JavaScript, and this line is then all that says how old it is. Kept
+     outside #app because every render replaces that wholesale. -->
+<p class="meta" id="stamp">updated {{served_at}}</p>
+<div id="app"><p class="empty">loading…</p></div>
+<script>
+const REFRESH_MS = 5000;
+
+// Everything interpolated into the HTML below comes from the payload —
+// project directories, branch names, hostnames, model names. Git permits
+// `<` and `>` in branch names (verified: `git branch 'feat/a<b'` succeeds),
+// so this is about not corrupting the page on ordinary input, not only about
+// hostile input. The tailnet threat model does not excuse a broken layout.
+function esc(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// The one gate every payload-derived number passes through before it is
+// formatted. The collector validates the *shape* of a tick, not the type of
+// every leaf, so a string or a null genuinely reaches this page — and each
+// of the coercions JavaScript offers here is a way of stating something
+// false. Math.round('abc') is NaN, so the budget card printed "NaN%".
+// tokens('5000') coerced through >= and / to a confident "5k". ('58').toFixed
+// is not a function, which threw mid-render. new Date(NaN) renders
+// "Invalid Date".
+//
+// Number.isFinite does not coerce, so a numeric-looking string like '58'
+// fails it and renders '—'. That is deliberate: it is malformed input, and
+// '—' is the honest answer for "no valid number here". Silently accepting it
+// would launder bad data into a figure the page appears to vouch for.
+function num(value) {
+  return Number.isFinite(value) ? value : null;
+}
+
+function tone(pct) {
+  // typeof NaN === 'number' and every comparison against NaN is false, so an
+  // unguarded NaN fell through each band to 'red' — an alarm invented from
+  // garbage. num() is what stops that.
+  if (num(pct) === null) return 'dim';
+  if (pct < 50) return 'green';
+  if (pct < 80) return 'yellow';
+  return 'red';
+}
+
+function toneColor(pct) {
+  return getComputedStyle(document.documentElement)
+    .getPropertyValue('--' + tone(pct)).trim();
+}
+
+// A length of time with no opinion about what it measures. Shared by `age`,
+// which is a time since, and by the sparkline's caption, which is a time
+// across — the same formatting problem, and formatting them differently
+// would be a difference the reader has to account for and cannot.
+function duration(secs) {
+  if (num(secs) === null) return '';
+  secs = Math.max(0, Math.round(secs));
+  if (secs < 60) return secs + 's';
+  if (secs < 3600) return Math.round(secs / 60) + 'm';
+  // Days only from two of them up. A local session never gets here; a cloud
+  // one can sit finished for a week, and "235h" is arithmetic left to the
+  // reader.
+  if (secs < 172800) return Math.round(secs / 3600) + 'h';
+  return Math.round(secs / 86400) + 'd';
+}
+
+// Callers drop an empty string via filter(Boolean), so an unusable age
+// disappears rather than reading "NaNs ago".
+function age(secs) {
+  const text = duration(secs);
+  return text ? text + ' ago' : '';
+}
+
+function tokens(n) {
+  // Guarded here rather than at the two call sites: '5000' passes `>= 1000`
+  // by coercion and formats as a confident "5k", and 'abc' fell through to
+  // String(n) and printed itself as though it were a token count.
+  if (num(n) === null) return '';
+  if (n >= 1000000) return (n / 1000000).toFixed(2) + 'M';
+  if (n >= 1000) return Math.round(n / 1000) + 'k';
+  return String(n);
+}
+
+function clock(epoch) {
+  if (num(epoch) === null) return '—';
+  return new Date(epoch * 1000).toLocaleTimeString([], {
+    hour: '2-digit', minute: '2-digit'
+  });
+}
+
+// For a reset that is days rather than hours away, the time alone is not a
+// statement about when. A weekday would not settle it either: a seven-day
+// window resets on the same weekday it started, so "Thu 09:00" read on a
+// Thursday is either minutes or a week away — and that is the reading right
+// after a reset, when the percentage beside it has just dropped and most
+// invites the wrong one.
+function datedClock(epoch) {
+  if (num(epoch) === null) return '—';
+  return new Date(epoch * 1000).toLocaleString([], {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
+  });
+}
+
+// The same shape server.py writes into the page, built by hand rather than
+// by toLocaleString, which varies by phone: the stamp must not change form on
+// the first poll, or the copy without JavaScript and the live page disagree.
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function stampText(date) {
+  const pad = n => String(n).padStart(2, '0');
+  return date.getDate() + ' ' + MONTHS[date.getMonth()] + ' '
+       + pad(date.getHours()) + ':' + pad(date.getMinutes());
+}
+
+// Moved on a successful render only. After a failure the page is showing an
+// error, not data, and the stamp should go on saying when it last was right.
+function restamp() {
+  document.getElementById('stamp').textContent = 'updated ' + stampText(new Date());
+}
+
+// Pace comes from the server already computed; this only phrases it.
+function paceText(pace) {
+  if (num(pace) === null) return '';
+  const rounded = Math.round(pace);
+  if (rounded < 0) return Math.abs(rounded) + '% behind';
+  if (rounded > 0) return rounded + '% ahead';
+  return 'on pace';
+}
+
+// The x-axis is the sample index, and the line is stretched to the card's
+// full width whatever the count — so two samples twenty seconds apart draw
+// exactly the same edge-to-edge line as a full thirty-minute ring. Nothing
+// in the picture distinguishes them, which is why one is withheld and the
+// other is captioned rather than left to be guessed at.
+//
+// Below this the line is not thin evidence, it is a shape with no trend in
+// it: at one sample per HISTORY_MIN_INTERVAL_SECS, two minutes is a dozen
+// readings, and fewer than that says only what the percentage above it
+// already says. The same judgement the budget card makes about a stale
+// figure — withhold rather than present something that cannot support the
+// reading it invites.
+const SPARKLINE_MIN_SPAN_SECS = 120;
+
+// The samples a line may be drawn from, or null if it may not be drawn.
+//
+// store.py declines to append a sample whose ctx_pct is null, so that half of
+// this filter is partly belt-and-braces. It is here because the coupling is
+// invisible from this file: an unguarded null or NaN plots at y = h, drawing
+// a confident 0% the collector never claimed. Number.isFinite rather than a
+// typeof test, because typeof NaN is 'number'. `t` is checked on the same
+// grounds — it is now arithmetic'd for the span, and a non-numeric one would
+// caption the line with a length that is not a length.
+function plottable(history) {
+  const samples = (history || []).filter(
+    sample => sample
+      && Number.isFinite(sample.ctx_pct)
+      && Number.isFinite(sample.t));
+  if (samples.length < 2) return null;
+  const span = samples[samples.length - 1].t - samples[0].t;
+  // `>=` written on the true branch: a NaN span fails every comparison, so
+  // asking `span < MIN` would have let it through to be captioned "NaNm".
+  if (!(span >= SPARKLINE_MIN_SPAN_SECS)) return null;
+
+  // A window in which the reading never changed is a horizontal line, and a
+  // horizontal line drawn edge to edge in the tone colour reads as a trend
+  // when it is the absence of one — it says exactly what the percentage
+  // above it already said, in a form that looks like it says more. Observed:
+  // two sessions holding 10% and 14% without moving for three quarters of an
+  // hour, both drawing a confident full-width stroke.
+  //
+  // So the line's presence is itself the signal. It appears when context is
+  // moving, which is the only time its shape carries anything the number
+  // does not. min/max by loop rather than Math.min(...values): the ring holds
+  // HISTORY_SLOTS samples and spreading an array of that size into arguments
+  // is a habit that breaks quietly once the ring is grown.
+  let lo = samples[0].ctx_pct, hi = lo;
+  for (const sample of samples) {
+    if (sample.ctx_pct < lo) lo = sample.ctx_pct;
+    if (sample.ctx_pct > hi) hi = sample.ctx_pct;
+  }
+  if (lo === hi) return null;
+
+  return { samples: samples, span: span };
+}
+
+function sparkline(plot) {
+  if (!plot) return '';
+  const samples = plot.samples;
+  const w = 240, h = 28;
+  const points = samples.map((sample, i) => {
+    const x = (i / (samples.length - 1)) * w;
+    const y = h - (Math.max(0, Math.min(100, sample.ctx_pct)) / 100) * h;
+    return x.toFixed(1) + ',' + y.toFixed(1);
+  }).join(' ');
+  const last = samples[samples.length - 1].ctx_pct;
+  // The caption rides beside the line rather than beneath it, so saying how
+  // much time the line covers costs the card no height at all.
+  return '<div class="spark">'
+       + '<svg width="100%" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">'
+       + '<polyline fill="none" stroke="' + toneColor(last) + '" stroke-width="1.5" '
+       + 'vector-effect="non-scaling-stroke" points="' + points + '"/></svg>'
+       + '<span class="meta">' + duration(plot.span) + '</span></div>';
+}
+
+function renderBudget(rateLimits, staleAsOf) {
+  if (!rateLimits) {
+    // Absent for non-Pro/Max accounts and before the first API response of a
+    // session. An honest blank beats a confident 0%.
+    //
+    // But "yet" is a claim about history, and a null arrives for two
+    // unrelated reasons: nothing ever reported one, or one was reported and
+    // the collector is withholding it as too old. Read from a phone on
+    // 2026-09-16 this line said "not reported yet" about an account whose
+    // usage had been reported all morning. The collector knows which silence
+    // this is and now sends it, so the page no longer has to pick one and
+    // hope. The figure itself stays withheld — only its date is said.
+    const since = num(staleAsOf);
+    return '<div class="card"><div class="meta">usage windows — '
+         + (since !== null ? 'nothing since ' + clock(since) : 'not reported yet')
+         + '</div></div>';
+  }
+  const label = { five_hour: '5h', seven_day: '7d' };
+  // How far out a window's reset is decides how much of the timestamp has to
+  // be said. `clock` is the fallback rather than `datedClock` because an
+  // unknown window is more likely to be short than weekly, and because an
+  // absent entry must not throw the whole render away.
+  const resetClock = { five_hour: clock, seven_day: datedClock };
+  const rows = rateLimits.windows.map(w => {
+    // A window object can be present with no percentage in it, in which case
+    // rate_limits is non-null and the "not reported yet" fallback above never
+    // fires. Math.round(null) is 0 and Math.round('abc') is NaN, so an
+    // unguarded round printed either a confident "0%" or "NaN%" — both false
+    // statements about real usage, the one thing this page must never make.
+    const pct = num(w.used_percentage);
+    const resets = num(w.resets_at);
+    return '<div class="row" style="margin-top:4px">'
+         + '<span><span class="badge">' + label[w.name] + '</span> '
+         + '<span class="pct ' + tone(pct) + '">'
+         + (pct !== null ? Math.round(pct) + '%' : '—') + '</span></span>'
+         + '<span class="meta">' + paceText(w.pace)
+         + (resets !== null ? ' · ↻' + (resetClock[w.name] || clock)(resets) : '')
+         + '</span></div>';
+  }).join('');
+  // Always date the figure. The collector withholds rate limits older than
+  // its max age, so anything shown here is recent — but "recent" is not the
+  // same as "now", and an undated percentage reads as the latter.
+  const asOfSecs = num(rateLimits.as_of);
+  const asOf = asOfSecs !== null
+    ? '<div class="meta" style="margin-top:6px">· as of ' + clock(asOfSecs) + '</div>'
+    : '';
+  return '<div class="card">' + rows + asOf + '</div>';
+}
+
+// Only a genuinely down tunnel is a fault worth alarming about. A quiet host
+// might simply have no sessions running, and nothing in the reported data can
+// tell that apart from a dead link — so the alarm comes from the tunnel probe,
+// never from silence.
+function renderTunnel(tunnel) {
+  if (!tunnel || tunnel.state !== 'down') return '';
+  return '<div class="card alert"><div class="row">'
+    + '<span class="proj">tunnel down</span></div>'
+    + '<div class="meta">remote sessions are not reporting — you are not seeing them</div>'
+    + '</div>';
+}
+
+// What the collector says each place is, as a glyph and a word for the
+// heading and a class for every card beneath it. A place in this table gets
+// its own glyph and colour. Any other place a machine stated (the collector
+// passes only one plain [a-z0-9-] word) is shown as that word in a neutral
+// colour. No place draws nothing: a host that did not say is not guessed at.
+const PLACES = {
+  laptop: ['💻', 'laptop'],
+  coder: ['🖥️', 'coder vm'],
+  cloud: ['☁️', ''],
+};
+
+function placeClass(place) {
+  if (!place) return '';
+  return PLACES[place] ? ' at-' + place : ' at-other';
+}
+
+function heading(name, place) {
+  const known = PLACES[place];
+  let mark = '';
+  if (!place) mark = '';
+  else if (known) mark = known[1] ? '<span class="where">' + known[1] + '</span>' : '';
+  else mark = '<span class="where">' + esc(place) + '</span>';
+  return '<div class="host' + placeClass(place) + '">'
+    + (known ? known[0] + ' ' : '') + esc(name) + mark
+    + '</div>';
+}
+
+// Every host the collector knows of, plus any host with a session on screen.
+// Neither list is a superset of the other in principle — a host record is
+// dropped an hour after contact and its sessions at fifteen minutes, so
+// `hosts` normally outlives `sessions` — but the union is what guarantees a
+// session the collector is still serving can never be silently dropped by the
+// page displaying it, which would be the worst failure this page has: a
+// running session invisible while looking straight at it.
+function hostNames(hosts, sessions) {
+  const names = new Set(hosts.map(h => h.host));
+  sessions.forEach(s => names.add(s.host));
+  return Array.from(names).sort((a, b) => a.localeCompare(b));
+}
+
+// One heading per host, its sessions beneath it. Within a host the order is
+// the collector's — alphabetical by project — so a card keeps its position
+// between refreshes instead of being sorted by a figure that moves.
+//
+// A host with nothing to show gets the one fact there is: when it last
+// spoke. It used to get "no sessions", which the collector cannot establish
+// and which was read as false on 2026-09-16 with four live sessions across
+// two hosts on screen — the failure this file elsewhere calls its worst.
+//
+// The reason it cannot be established is structural, not a bug that was
+// fixed. What arrives here are ticks, not sessions. A session whose status
+// line has stopped firing and no session at all send exactly the same thing
+// — nothing — so any sentence distinguishing them is a guess about the cause
+// of silence, printed in the page's own voice. The 2026-07-31 design says as
+// much under its non-goals: the store "sees only the absence of ticks".
+//
+// "not reporting" holds under both readings, and someone who knows they left
+// a session running now reads a line that disagrees with them, which is the
+// cue to go and find out why. Whether the link is broken is still answered
+// only by the tunnel card, and this wording is careful not to imply it.
+//
+// The membership test is the session list the collector serves, which now
+// holds live sessions only — so "has sessions" and "has live sessions" are
+// the same question and cannot disagree.
+//
+// They could before. The page filtered on a per-session state field, and a
+// host whose sessions had all gone quiet printed "no sessions" directly
+// above a greyed card belonging to that same host — flatly false while it
+// was on screen. That is why the collector, not the page, decides what
+// counts as live: reintroducing a state field here and filtering on it would
+// re-arm exactly that bug.
+function renderHostGroups(hosts, sessions) {
+  const lastSeen = new Map(hosts.map(h => [h.host, h.last_seen]));
+  // A host with sessions but no host record gets no place, and so no edge:
+  // the union above exists so such a card is never dropped, not so it can
+  // be labelled by guesswork.
+  const places = new Map(hosts.map(h => [h.host, h.place]));
+  return hostNames(hosts, sessions).map(host => {
+    const place = places.get(host);
+    const head = heading(host, place);
+    const mine = sessions.filter(s => s.host === host);
+    if (mine.length) return head + mine.map(s => renderSession(s, place)).join('');
+    // The collector's own host is listed whether or not it has ever ticked,
+    // so "last tick —" is now reachable and would be a dash standing in for
+    // a sentence. A machine that has never reported is the plainest case
+    // this page has and deserves plain words.
+    const seen = lastSeen.get(host);
+    return head
+      + '<div class="card' + placeClass(place) + '"><div class="meta">not reporting · '
+      + (num(seen) !== null ? 'last tick ' + clock(seen) : 'no ticks yet')
+      + '</div></div>';
+  }).join('');
+}
+
+// A session that is also on claude.ai — cloud, or local with Remote Control
+// on — is one tap target, the whole card, not a title a thumb has to find.
+// The url is always one the collector built, never one a reporter sent.
+function card(cls, url, inner) {
+  return url
+    ? '<a class="card' + cls + '" href="' + esc(url) + '">' + inner + '</a>'
+    : '<div class="card' + cls + '">' + inner + '</div>';
+}
+
+function renderSession(s, place) {
+  // Same rule as the budget header: an honest dash beats a confident 0%,
+  // and a non-number is not a percentage however much it looks like one.
+  const pct = num(s.ctx_pct);
+  const known = pct !== null;
+  const pctText = known ? 'ctx ' + Math.round(pct) + '%' : 'ctx —';
+  const width = known ? Math.max(0, Math.min(100, pct)) : 0;
+  const sizeText = tokens(s.ctx_window_size);
+  const size = sizeText ? ' / ' + sizeText : '';
+  return card(placeClass(place), s.url, ''
+    // No host badge: the card now sits under a heading naming its host, and
+    // repeating it on every card is the kind of duplicated noise that made
+    // seven cards read as one wall of text.
+    + '<div class="row"><span class="proj">' + esc(s.project || '—') + '</span></div>'
+    + '<div class="branch">' + esc(s.branch) + '</div>'
+    + '<div class="bar"><div style="width:' + width + '%;background:' + toneColor(pct) + '"></div></div>'
+    + '<div class="row"><span class="pct ' + tone(pct) + '">' + pctText + '</span>'
+    + '<span class="meta">' + tokens(s.ctx_used_tokens) + size + '</span></div>'
+    + sparkline(plottable(s.history))
+    // The API still carries cost_usd; this line deliberately does not spend
+    // it. On a Max plan no session is billed, so the figure was noise that
+    // read as a bill at a glance — the one impression this page must not
+    // give by accident.
+    + '<div class="meta">' + [esc(s.model), esc(s.effort),
+        age(s.age_secs)].filter(Boolean).join(' · ') + '</div>');
+}
+
+// status_bucket as the API sent it on 2026-09-25. An unknown value is shown
+// verbatim rather than mapped onto the nearest one: it is a word from an
+// undocumented API, and guessing its meaning would state something unknown.
+const CLOUD_STATES = {
+  working: ['working', 'green'],
+  blocked: ['waiting on you', 'yellow'],
+  review_ready: ['ready for review', 'dim'],
+  completed: ['done', 'dim'],
+};
+
+function renderCloudSession(s) {
+  const pct = num(s.ctx_pct);
+  const known = pct !== null;
+  const width = known ? Math.max(0, Math.min(100, pct)) : 0;
+  const sizeText = tokens(s.ctx_window_size);
+  const state = CLOUD_STATES[s.bucket] || [s.bucket || 'unknown', 'dim'];
+  // Only a session that is blocked is asked what it needs; for the rest the
+  // summary of what it last did is the more useful line.
+  const note = s.bucket === 'blocked' ? (s.needs_action || s.status_detail) : s.status_detail;
+  return card(' at-cloud', s.url, ''
+    + '<div class="row"><span class="proj">' + esc(s.title || s.repo || '—') + '</span></div>'
+    + '<div class="branch">' + esc([s.repo, s.branch].filter(Boolean).join(' · ')) + '</div>'
+    + '<div class="row" style="margin-top:4px"><span class="pct ' + state[1] + '">'
+    + esc(state[0]) + '</span></div>'
+    + (note ? '<div class="meta note">' + esc(note) + '</div>' : '')
+    + '<div class="bar"><div style="width:' + width + '%;background:' + toneColor(pct) + '"></div></div>'
+    + '<div class="row"><span class="pct ' + tone(pct) + '">'
+    + (known ? 'ctx ' + Math.round(pct) + '%' : 'ctx —') + '</span>'
+    + '<span class="meta">' + tokens(s.ctx_used_tokens) + (sizeText ? ' / ' + sizeText : '')
+    + '</span></div>'
+    + '<div class="meta">' + [esc(s.model), age(s.age_secs)].filter(Boolean).join(' · ') + '</div>');
+}
+
+// Cloud sessions are polled from Anthropic, not reported by a host, so they
+// get their own heading and their own ways of being unknown. Each one is
+// said in words: a login that has lapsed, a list withheld as too old, and an
+// API that answered with something unreadable are different silences, and
+// none of them is "no cloud sessions".
+function renderCloud(cloud) {
+  if (!cloud) return '';
+  const head = heading('cloud', 'cloud');
+  const line = text => head + '<div class="card at-cloud"><div class="meta">' + text + '</div></div>';
+  const detail = cloud.detail ? esc(cloud.detail) : '';
+  if (!Array.isArray(cloud.sessions)) {
+    const since = num(cloud.stale_as_of);
+    if (since !== null) return line('nothing since ' + clock(since) + (detail ? ' · ' + detail : ''));
+    if (cloud.state === 'starting') return line('checking…');
+    return line(detail || 'unavailable');
+  }
+  // The list is served, but the latest poll failed: say so above the cards
+  // it did not refresh, with the time they are from.
+  const warning = cloud.state !== 'ok'
+    ? '<div class="meta">as of ' + clock(num(cloud.as_of)) + (detail ? ' · ' + detail : '') + '</div>'
+    : '';
+  if (!cloud.sessions.length) return line('no active cloud sessions') + warning;
+  return head + warning + cloud.sessions.map(renderCloudSession).join('');
+}
+
+function show(html) {
+  document.getElementById('app').innerHTML = html;
+}
+
+function problem(text) {
+  return '<div class="card alert">' + text + '</div>';
+}
+
+// Active sessions are no longer floated above quiet ones. Sorting by liveness
+// moved cards around exactly as sorting by context did — a session's liveness
+// flipped 45 seconds after its last tick and back on the next one, so a card
+// could jump the length of the page and back while being read. Position is
+// what makes a card findable twice, and it must not be spent on a fact that
+// changes while you are looking.
+//
+// The page no longer distinguishes live from quiet at all: the collector
+// serves only sessions within ACTIVE_SECS, so a quiet session leaves rather
+// than being marked. An earlier version of this comment justified the sort
+// order by saying staleness was "already said by the dimmed content" — there
+// is no dimmed content now, and nothing here should imply otherwise.
+function render(data) {
+  return renderTunnel(data.tunnel)
+    + renderBudget(data.rate_limits, data.rate_limits_stale_as_of)
+    + (data.sessions.length || data.hosts.length
+        ? renderHostGroups(data.hosts, data.sessions)
+        : '<p class="empty">no sessions reporting</p>')
+    + renderCloud(data.cloud);
+}
+
+// Fetching and rendering are separated so the failure modes stay separable.
+// One catch around both used to render "collector unreachable" for a dead
+// network, an HTTP error status, a store exception and a bug thrown inside
+// renderSession alike — so the single message the page showed on failure was
+// the one thing it could not actually establish. A page whose whole point is
+// not stating something false must not blame the network for its own bug.
+async function tick() {
+  let response;
+  try {
+    response = await fetch('/api/sessions', { cache: 'no-store' });
+  } catch (err) {
+    show(problem('collector unreachable'));
+    return;
+  }
+  if (!response.ok) {
+    // It answered, so the network is fine and the collector is not.
+    show(problem('collector returned HTTP ' + response.status));
+    return;
+  }
+  let data;
+  try {
+    data = await response.json();
+  } catch (err) {
+    show(problem('unreadable response from the collector — ' + esc(err && err.message)));
+    return;
+  }
+  try {
+    show(render(data));
+    restamp();
+  } catch (err) {
+    show(problem('this page failed to render that update — ' + esc(err && err.message)));
+  }
+}
+
+tick();
+setInterval(tick, REFRESH_MS);
+</script>
+</body>
+</html>

@@ -1,0 +1,34 @@
+[Unit]
+Description=StatusGumbo collector
+After=network.target
+
+[Service]
+Type=simple
+# collector.server resolves its bind list once, at startup. No Tailscale
+# address is a supported case — it binds loopback and warns — but that is the
+# right answer to an outage and the wrong one to a boot race, where the daemon
+# is seconds behind: the collector then serves 127.0.0.1 for its whole run and
+# looks healthy while the phone cannot reach it. Nothing fails, so Restart does
+# not fire. This unit and tailscaled start at much the same point in boot, and
+# a user unit cannot order itself After= a system one.
+#
+# The final `exit 0` is load-bearing. A failing ExecStartPre aborts the start
+# job, so without it a Tailscale outage would mean no collector at all —
+# strictly worse than the fallback this is here to avoid. It delays, never
+# refuses.
+#
+# Written with no shell variable on purpose: systemd expands `$foo` in
+# ExecStart* before /bin/sh sees it, and `$$` escaping is easy to lose later.
+ExecStartPre=/bin/sh -c 'timeout 60 sh -c "until tailscale ip -4 >/dev/null 2>&1; do sleep 2; done"; exit 0'
+# Machine-local options, such as --cloud, go in the optional env file:
+#   STATUSGUMBO_COLLECTOR_ARGS=--cloud
+# Unquoted and a word of its own, so systemd splits it into arguments and an
+# unset variable adds none. The token can go there too (STATUSGUMBO_TOKEN_FILE).
+EnvironmentFile=-%h/.config/statusgumbo/collector.env
+ExecStart=/usr/bin/python3 -m collector.server --port 4747 $STATUSGUMBO_COLLECTOR_ARGS
+WorkingDirectory=@REPO@
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

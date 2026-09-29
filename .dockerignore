@@ -1,0 +1,4 @@
+# The image copies collector/ only; keep everything else out of the context.
+*
+!collector/
+collector/__pycache__/

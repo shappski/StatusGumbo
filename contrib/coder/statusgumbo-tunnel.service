@@ -1,0 +1,45 @@
+[Unit]
+Description=StatusGumbo reverse tunnel to the Coder VM
+After=network.target statusgumbo.service
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/statusgumbo/tunnel.env
+# A monitoring tunnel must never provision infrastructure. `coder ssh`
+# autostarts a stopped workspace by default, and this unit reaches it through
+# the ProxyCommand in ~/.ssh/config — so on 2026-07-30 a sleeping workspace was
+# retried every 11 seconds through 13 "last build job is stopping" errors and
+# then dragged back up by a full terraform apply, 68 seconds of provisioning
+# plus startup scripts, on a box deliberately left to stop.
+#
+# The environment, not a flag: what eventually runs is ssh, and coder is only
+# the ProxyCommand, so this is the one channel that reaches the client. Editing
+# the ssh config instead would not survive `coder config-ssh`, which rewrites
+# that block and carries a DO NOT EDIT header saying so. It belongs on the unit
+# rather than inside the wrapper because the environment is what systemd owns.
+Environment=CODER_SSH_DISABLE_AUTOSTART=true
+# ExecStart is a supervisor, not ssh — and the ssh options moved with it into
+# the wrapper, ControlMaster/ControlPath included.
+#
+# The retry policy used to live here as RestartSec/RestartSteps/
+# RestartMaxDelaySec, and could not. Those derive the delay from NRestarts, and
+# systemd 255 never decays that counter: it survives a `systemctl restart`, and
+# a long healthy run does not reset it either. Measured on 2026-07-31, when
+# this unit had run eleven hours (00:28→11:26) and still carried NRestarts=16
+# from the previous night's outage, so it sat permanently at its 10-minute
+# ceiling. A reverse tunnel cannot survive a laptop suspend and there are
+# several suspends a day, so every resume then cost up to ten minutes of a
+# blind phone page for a link that came back on the first try.
+#
+# Backoff that decays on success needs state systemd will not keep. It lives in
+# the wrapper, and tests/test_tunnel.sh pins it.
+ExecStart=@REPO@/contrib/coder/tunnel.sh
+# A backstop for the supervisor itself dying, not the retry policy — the
+# wrapper rides out dropped connections without exiting. Flat and short on
+# purpose: if this fires, something unexpected happened and there is nothing
+# to back off from.
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

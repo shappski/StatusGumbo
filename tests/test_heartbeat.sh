@@ -241,6 +241,43 @@ else
 fi
 reset_state
 
+# 12. A cache directory that is not this user's own real directory is not
+#     used. In /tmp another user can create it first, swap in a tick of their
+#     own, and the heartbeat would post it with this user's token. Simulated
+#     with a symlink, since a test can't own a directory as someone else.
+reset_state
+mkdir -p "$STATUSGUMBO_STATE_DIR" "$WORK/elsewhere"
+ln -s "$WORK/elsewhere" "$STATUSGUMBO_STATE_DIR/sessions"
+STATUSGUMBO_URL='http://192.0.2.1:8080' sh "$SCRIPT" < "$PAYLOAD" >/dev/null 2>&1
+if [ -z "$(ls -A "$WORK/elsewhere")" ]; then
+    pass 'a tick is not cached into a symlinked directory'
+else
+    fail 'a tick is not cached into a symlinked directory'
+fi
+rm -rf "$WORK/elsewhere"
+reset_state
+
+# 13. A cached tick that is a symlink is not posted by the heartbeat.
+mkdir -p "$STATUSGUMBO_STATE_DIR/sessions"
+cp "$PAYLOAD" "$WORK/planted.json"
+touch -d '-1 minute' "$WORK/planted.json"
+ln -s "$WORK/planted.json" "$CACHE"
+: > "$CAPTURE"
+python3 "$ROOT/tests/helpers/capture_post.py" 49994 "$CAPTURE" &
+capture_pid=$!
+sleep 1
+URL='http://127.0.0.1:49994'
+start_claude 4
+sleep 3
+if [ ! -s "$CAPTURE" ]; then
+    pass 'the heartbeat does not post a symlinked cache file'
+else
+    fail 'the heartbeat does not post a symlinked cache file'
+fi
+kill "$capture_pid" "$claude_pid" 2>/dev/null || true
+wait "$claude_pid" 2>/dev/null || true
+reset_state
+
 rm -rf "$WORK"
 printf '\n'
 if [ "$fails" -eq 0 ]; then

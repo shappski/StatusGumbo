@@ -50,9 +50,15 @@ if [ -z "${STATUSGUMBO_URL:-}" ]; then
     if [ -r "$urlfile" ]; then
         STATUSGUMBO_URL=$(tr -d ' \t\r\n' < "$urlfile" 2>/dev/null) || STATUSGUMBO_URL=
         STATUSGUMBO_URL=${STATUSGUMBO_URL%/}
-        case $STATUSGUMBO_URL in http://?*|https://?*) ;; *) STATUSGUMBO_URL= ;; esac
     fi
 fi
+# Checked whichever way it came: a value starting with "-" would reach curl
+# as an option.
+case ${STATUSGUMBO_URL:-} in
+    *[[:space:]]*) STATUSGUMBO_URL= ;;
+    http://?*|https://?*) ;;
+    *) STATUSGUMBO_URL= ;;
+esac
 
 # No collector configured: the overwhelmingly common case elsewhere. Leave.
 [ -n "${STATUSGUMBO_URL:-}" ] || exit 0
@@ -86,13 +92,39 @@ command -v setsid >/dev/null 2>&1 && detach=setsid
 
 # Beside the collector's own tunnel.state when there is a runtime dir; a
 # per-user /tmp dir on a box without one.
+#
+# /tmp is shared, so another user can create /tmp/statusgumbo-<uid> first.
+# mkdir -p would then use their directory, they could swap a cached tick for
+# one of their own, and the heartbeat would post it with this user's token.
+# So every level must be a real directory owned by this user, and if one is
+# not, nothing is cached: the heartbeat is lost, the status line is not.
+tmpbase=
 if [ -n "${STATUSGUMBO_STATE_DIR:-}" ]; then
     sessions=$STATUSGUMBO_STATE_DIR/sessions
 elif [ -n "${XDG_RUNTIME_DIR:-}" ]; then
     sessions=$XDG_RUNTIME_DIR/statusgumbo/sessions
 else
-    sessions=/tmp/statusgumbo-$(id -u)/sessions
+    tmpbase=/tmp/statusgumbo-$(id -u)
+    sessions=$tmpbase/sessions
 fi
+
+owned_dir() {
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]
+}
+# The cache directory is safe to use: ours at every level we created.
+sessions_ok() {
+    { [ -z "$tmpbase" ] || owned_dir "$tmpbase"; } && owned_dir "$sessions"
+}
+make_sessions() {
+    if [ -n "$tmpbase" ]; then
+        mkdir -m 700 "$tmpbase" 2>/dev/null
+        owned_dir "$tmpbase" || return 1
+        mkdir -m 700 "$sessions" 2>/dev/null
+    else
+        (umask 077; mkdir -p "$sessions") 2>/dev/null
+    fi
+    sessions_ok
+}
 
 interval=${STATUSGUMBO_HEARTBEAT_SECS:-10}
 case $interval in ''|*[!0-9]*|0) interval=10 ;; esac
@@ -144,8 +176,11 @@ post() {
     transcript=$(printf '%s' "$1" | jq -r '.transcript_path // empty' 2>/dev/null) || transcript=
     bridge=
     if [ -n "$transcript" ] && [ -r "$transcript" ]; then
-        bridge=$(grep -F '"type":"bridge-session"' "$transcript" 2>/dev/null | tail -n 1 \
-            | jq -r '.bridgeSessionId // empty' 2>/dev/null) || bridge=
+        # grep only narrows the lines; jq decides which are the records, so
+        # a line that merely mentions the string can't hide the last real one.
+        bridge=$(grep -F -- '"type":"bridge-session"' "$transcript" 2>/dev/null \
+            | jq -r 'select(.type? == "bridge-session") | .bridgeSessionId // empty' 2>/dev/null \
+            | tail -n 1) || bridge=
     fi
 
     printf '%s' "$1" \
@@ -189,6 +224,7 @@ case ${1:-} in
     sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null) || exit 0
     plain_id "$sid" || exit 0
     # No tick cached means nothing true to repeat.
+    sessions_ok || exit 0
     [ -f "$sessions/$sid.json" ] || exit 0
     # Nothing to watch means nothing would ever end the loop. Fail safe.
     pid=$(claude_ancestor) || exit 0
@@ -203,6 +239,7 @@ case ${1:-} in
     sid=${2:-}; pid=${3:-}
     plain_id "$sid" || exit 0
     case $pid in ''|*[!0-9]*) exit 0 ;; esac
+    sessions_ok || exit 0
     cache=$sessions/$sid.json
     pidfile=$sessions/$sid.wait
 
@@ -232,6 +269,8 @@ case ${1:-} in
             [ "$fresh" -ge 3 ] && break
         else
             fresh=0
+            # Only a tick this user wrote is sent with this user's token.
+            { [ -O "$cache" ] && [ ! -L "$cache" ]; } || break
             post "$(cat "$cache")" >/dev/null 2>&1
         fi
         cycles=$((cycles + 1))
@@ -248,12 +287,13 @@ input=$(cat)
 # reads half a payload.
 sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null) || sid=
 if plain_id "$sid"; then
-    (
-        umask 077
-        mkdir -p "$sessions" &&
+    if make_sessions; then
+        (
+            umask 077
             printf '%s' "$input" > "$sessions/.$sid.$$" &&
-            mv -f "$sessions/.$sid.$$" "$sessions/$sid.json"
-    ) >/dev/null 2>&1
+                mv -f "$sessions/.$sid.$$" "$sessions/$sid.json"
+        ) >/dev/null 2>&1
+    fi
 fi
 
 # The whole pipeline is backgrounded and fully redirected, so no descriptor

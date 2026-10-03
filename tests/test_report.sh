@@ -216,6 +216,13 @@ else fail "without Remote Control, bridge is left out (got $got)"; fi
 got=$(bridge_of "$TRANSCRIPT.missing")
 if [ "$got" = '<absent>' ]; then pass 'an unreadable transcript leaves bridge out'
 else fail "an unreadable transcript leaves bridge out (got $got)"; fi
+{
+    printf '%s\n' '{"type":"bridge-session","sessionId":"6d876063-b801-4738-bc7e-9a425e773b97","bridgeSessionId":"cse_01real"}'
+    printf '%s\n' '{"type":"user","toolUseResult":{"type":"bridge-session","note":"not a record"}}'
+} > "$TRANSCRIPT"
+got=$(bridge_of "$TRANSCRIPT")
+if [ "$got" = cse_01real ]; then pass 'a later line that only contains the marker does not hide the record'
+else fail "a later line that only contains the marker does not hide the record (got $got)"; fi
 rm -f "$TRANSCRIPT"
 
 # 4d. The shared token. A collector with a token refuses reports without it,
@@ -287,6 +294,11 @@ printf 'file:///etc/passwd\n' > "$CFG/statusgumbo/url"
 out=$(env -u STATUSGUMBO_URL XDG_CONFIG_HOME="$CFG" sh "$SCRIPT" < "$PAYLOAD" 2>&1); rc=$?
 if [ -z "$out" ] && [ "$rc" -eq 0 ]; then pass 'a url file that is not http(s) is ignored, silently'
 else fail "a url file that is not http(s) is ignored, silently (rc=$rc out=$out)"; fi
+for bad in 'ftp://127.0.0.1:49996' '-K/etc/passwd' 'http://127.0.0.1:49996 -v'; do
+    got=$(url_post STATUSGUMBO_URL="$bad")
+    if [ "$got" = nothing ]; then pass "a STATUSGUMBO_URL of '$bad' is not used"
+    else fail "a STATUSGUMBO_URL of '$bad' is not used (got $got)"; fi
+done
 rm -rf "$CFG"
 
 # 5. The documented integration snippet itself, in both states that matter.

@@ -690,3 +690,69 @@ class TheLogoShowsOnAWideScreenOnly(unittest.TestCase):
 
     def test_it_uses_an_icon_the_collector_serves(self):
         self.assertIn('<header class="brand"><img src="/icons/icon-192.png"', SOURCE)
+
+
+class TestThemes(unittest.TestCase):
+    """2026-10-03. GitGumbo's theme picker, on this page's own palettes."""
+
+    def css_themes(self):
+        found = {}
+        for name, block in re.findall(r':root\[data-theme="([a-z-]+)"\] \{(.*?)\}', SOURCE, re.S):
+            found[name] = dict(re.findall(r"--([a-z]+): (#[0-9a-f]{6})", block))
+        root = re.search(r"  :root \{(.*?)\n  \}", SOURCE, re.S).group(1)
+        found["dark"] = dict(re.findall(r"--([a-z]+): (#[0-9a-f]{6})", root))
+        return found
+
+    def js_themes(self):
+        found = {}
+        for name, body in re.findall(r"^  '?([a-z-]+)'?: \{ label: '[^']+', (.*?) \},$", SOURCE, re.M):
+            found[name] = dict(re.findall(r"(\w+): '(#[0-9a-f]{6})'", body))
+        return found
+
+    def test_every_palette_has_a_picker_entry_and_the_reverse(self):
+        self.assertEqual(set(self.css_themes()), set(self.js_themes()))
+        self.assertEqual(len(self.js_themes()), 7)
+
+    def test_each_preview_mirrors_its_palette(self):
+        css = self.css_themes()
+        for name, preview in self.js_themes().items():
+            for token, colour in preview.items():
+                self.assertEqual(css[name][token], colour, "%s --%s" % (name, token))
+
+    def test_every_palette_sets_every_token(self):
+        tokens = set(self.css_themes()["dark"])
+        for name, palette in self.css_themes().items():
+            self.assertEqual(set(palette), tokens, name)
+
+    def test_the_theme_is_applied_before_the_body_is_parsed(self):
+        head = SOURCE[:SOURCE.index("<body>")]
+        self.assertIn("applyTheme(themeChoice);", head)
+
+    def test_a_stored_choice_is_checked_before_it_is_used(self):
+        body = function_source("loadThemeChoice")
+        self.assertIn("isThemeChoice(stored)", body)
+        self.assertIn("try", body)
+
+    def test_choosing_redraws_the_cards(self):
+        # Bars and sparklines take toneColor() at render time.
+        body = function_source("chooseTheme")
+        self.assertIn("applyTheme(choice)", body)
+        self.assertIn("redraw()", body)
+
+    def test_enter_on_an_option_dismisses_without_picking(self):
+        self.assertIn("event.preventDefault();\n    setMenuOpen(false);", SOURCE)
+
+
+class TestTheCloudContextIsDated(unittest.TestCase):
+    """2026-10-03. The API's context figure lags with no time of its own."""
+
+    def test_the_card_shows_when_the_figure_was_first_seen(self):
+        body = function_source("renderCloudSession")
+        self.assertIn("num(s.ctx_as_of)", body)
+        self.assertIn("clock(asOf)", body)
+
+    def test_a_date_the_poll_cannot_vouch_for_is_marked(self):
+        self.assertIn("s.ctx_as_of_exact === true ? '' : '≤'", function_source("renderCloudSession"))
+
+    def test_an_unknown_figure_is_not_dated(self):
+        self.assertIn("known ? num(s.ctx_as_of) : null", function_source("renderCloudSession"))

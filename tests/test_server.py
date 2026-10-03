@@ -407,12 +407,14 @@ class TestAStaleCopyOfThePageIsRecognisable(ServerTestCase):
         self.assertEqual(self.stamp(body), "updated 5 Sep 14:02")
 
     def test_the_stamp_is_readable_without_javascript(self):
-        # In the markup, ahead of the page's only <script>, so it is text the
-        # parser renders rather than something a script has to produce.
+        # In the markup, ahead of the body's <script>, so it is text the
+        # parser renders rather than something a script has to produce. (The
+        # head's script only picks the theme.)
         _, body = self.fetch_root()
         stamp_at = body.find('id="stamp"')
         self.assertNotEqual(stamp_at, -1, "no stamp element")
-        self.assertLess(stamp_at, body.index("<script>"))
+        self.assertLess(body.index("<body>"), stamp_at)
+        self.assertLess(stamp_at, body.index("<script>", body.index("<body>")))
 
     def test_the_date_is_part_of_the_stamp(self):
         # A bare HH:MM is exactly what fails here: a copy saved yesterday at
@@ -638,9 +640,11 @@ class TestTokenAuth(ServerTestCase):
         status, headers, body = self.request("/", headers=self.bearer())
         csp = headers.get("Content-Security-Policy", "")
         self.assertIn("frame-ancestors 'none'", csp)
-        script = re.search(rb"<script>(.*?)</script>", body, re.S).group(1)
-        digest = base64.b64encode(hashlib.sha256(script).digest()).decode()
-        self.assertIn("'sha256-%s'" % digest, csp)
+        scripts = re.findall(rb"<script>(.*?)</script>", body, re.S)
+        self.assertEqual(len(scripts), 2)  # the head's theme, the body's page
+        for script in scripts:
+            digest = base64.b64encode(hashlib.sha256(script).digest()).decode()
+            self.assertIn("'sha256-%s'" % digest, csp)
         self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff")
 
     def test_json_nested_too_deep_is_a_plain_400(self):

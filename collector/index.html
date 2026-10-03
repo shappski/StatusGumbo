@@ -31,6 +31,59 @@
        edge can never be read as a verdict: green, yellow and red already
        mean something on this page, and a laptop is not "fine". */
     --laptop: #58a6ff; --coder: #bc8cff; --cloud: #39d0d8; --other: #8b949e;
+    color-scheme: dark;
+  }
+  /* GitGumbo's themes, so the family reads as one. The colours are this
+     page's own, not GitGumbo's tokens: each palette needs the three status
+     hues and the four place hues, and every text colour here clears 4.5:1
+     on the surface it sits on (status words on --card; --fg, --dim and the
+     place words on --bg too, where the headings are) and every status hue
+     3:1 against --line, the bar track it fills. Light palettes darken the
+     status hues for that; on Post-it, "yellow" is an amber-brown, because a
+     yellow word on a yellow card says nothing. The picker's preview tiles
+     mirror these values (THEMES in the head script; a test holds them
+     equal). With no theme chosen the page stays dark, as it always was. */
+  :root[data-theme="light"] {
+    --bg: #f0f0f0; --card: #ffffff; --line: #e5e7eb; --edge: #9ca3af;
+    --fg: #111827; --dim: #57606a;
+    --green: #1a7f37; --yellow: #9a6700; --red: #cf222e;
+    --laptop: #0969da; --coder: #7a45d6; --cloud: #176f75; --other: #636c76;
+    color-scheme: light;
+  }
+  :root[data-theme="high-contrast"] {
+    --bg: #e8e8ec; --card: #ffffff; --line: #d1d5db; --edge: #4b5563;
+    --fg: #000000; --dim: #374151;
+    --green: #116329; --yellow: #7d4e00; --red: #a40e26;
+    --laptop: #0550ae; --coder: #6639ba; --cloud: #0e5f66; --other: #4b5563;
+    color-scheme: light;
+  }
+  :root[data-theme="gruvbox"] {
+    --bg: #282828; --card: #32302f; --line: #504945; --edge: #665c54;
+    --fg: #ebdbb2; --dim: #a89984;
+    --green: #b8bb26; --yellow: #fabd2f; --red: #ff7466;
+    --laptop: #7c9fd6; --coder: #d3869b; --cloud: #8ec0b8; --other: #a89984;
+    color-scheme: dark;
+  }
+  :root[data-theme="dracula"] {
+    --bg: #282a36; --card: #343746; --line: #44475a; --edge: #6272a4;
+    --fg: #f8f8f2; --dim: #a4abc9;
+    --green: #50fa7b; --yellow: #f1fa8c; --red: #ff7a7a;
+    --laptop: #bd93f9; --coder: #ff79c6; --cloud: #8be9fd; --other: #a4abc9;
+    color-scheme: dark;
+  }
+  :root[data-theme="index-card"] {
+    --bg: #e3d9c6; --card: #efe6d2; --line: #d2c4a6; --edge: #8a7659;
+    --fg: #2e2418; --dim: #5e4f3a;
+    --green: #2d6a2e; --yellow: #7a5200; --red: #9e2a1f;
+    --laptop: #1f3a63; --coder: #6b3d8c; --cloud: #1d6670; --other: #66573f;
+    color-scheme: light;
+  }
+  :root[data-theme="postit"] {
+    --bg: #ded9d0; --card: #f0d54a; --line: #d4b934; --edge: #847f74;
+    --fg: #1b1a17; --dim: #4f4a3c;
+    --green: #1f5f27; --yellow: #7a4100; --red: #9b1418;
+    --laptop: #1f3a63; --coder: #5e2784; --cloud: #0d5560; --other: #4f4a3c;
+    color-scheme: light;
   }
   * { box-sizing: border-box; }
   body {
@@ -132,14 +185,114 @@
     color: var(--dim); cursor: pointer; line-height: 0; align-self: center;
   }
   .pin[aria-pressed="true"] { color: var(--fg); }
+  /* The stamp, with the theme picker at its right. The button's negative
+     margin keeps the row the stamp's own height, as the pin's does. */
+  .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .picker { position: relative; }
+  .trigger {
+    display: flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; margin: -7px -6px 0 0; padding: 0;
+    background: none; border: 0; border-radius: 8px;
+    color: var(--dim); cursor: pointer;
+  }
+  .trigger:hover, .trigger[aria-expanded="true"] { background: var(--line); color: var(--fg); }
+  .menu {
+    position: absolute; right: -6px; top: calc(100% + 4px); z-index: 10;
+    width: 14rem; padding: 8px;
+    background: var(--card); border: 1px solid var(--edge); border-radius: 8px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.35);
+  }
+  .menu-label {
+    margin: 0; padding: 4px 8px 6px; color: var(--dim);
+    font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .opt {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    padding: 6px 8px; border: 0; border-radius: 6px; background: none;
+    color: var(--dim); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+  }
+  .opt:hover { background: var(--line); color: var(--fg); }
+  .opt[aria-pressed="true"] { background: var(--line); color: var(--fg); font-weight: 700; }
+  .opt .check { margin-left: auto; visibility: hidden; }
+  .opt[aria-pressed="true"] .check { visibility: visible; }
+  /* GitGumbo's mini board: a card on the theme's background, a status bar and
+     two lines of text. Coloured dots merged bg into card on most palettes. */
+  .tile {
+    display: flex; flex: none; width: 32px; height: 24px; padding: 3px;
+    border: 1px solid; border-radius: 5px;
+  }
+  .tile > span {
+    display: flex; flex: 1; flex-direction: column; justify-content: center; gap: 2px;
+    padding: 3px; border: 1px solid; border-radius: 3px;
+  }
+  .tile i { display: block; height: 2px; border-radius: 2px; }
+  .tile i:first-child { width: 8px; height: 3px; }
+  .tile i:last-child { width: 60%; }
 </style>
+<script>
+// Themes run before the body is parsed, so a light page never flashes dark
+// first. Each preview mirrors that palette's tokens in the stylesheet above.
+const THEME_STORE = 'statusgumbo.theme';
+const DEFAULT_THEME = 'dark';
+const THEMES = {
+  dark: { label: 'Dark', bg: '#0e1116', card: '#171b22', edge: '#454f60', green: '#3fb950', fg: '#e6edf3', dim: '#8b949e' },
+  light: { label: 'Light', bg: '#f0f0f0', card: '#ffffff', edge: '#9ca3af', green: '#1a7f37', fg: '#111827', dim: '#57606a' },
+  'high-contrast': { label: 'High Contrast', bg: '#e8e8ec', card: '#ffffff', edge: '#4b5563', green: '#116329', fg: '#000000', dim: '#374151' },
+  gruvbox: { label: 'Gruvbox', bg: '#282828', card: '#32302f', edge: '#665c54', green: '#b8bb26', fg: '#ebdbb2', dim: '#a89984' },
+  dracula: { label: 'Dracula', bg: '#282a36', card: '#343746', edge: '#6272a4', green: '#50fa7b', fg: '#f8f8f2', dim: '#a4abc9' },
+  'index-card': { label: 'Index Card', bg: '#e3d9c6', card: '#efe6d2', edge: '#8a7659', green: '#2d6a2e', fg: '#2e2418', dim: '#5e4f3a' },
+  postit: { label: 'Post-it', bg: '#ded9d0', card: '#f0d54a', edge: '#847f74', green: '#1f5f27', fg: '#1b1a17', dim: '#4f4a3c' },
+};
+
+function isThemeChoice(value) {
+  return value === 'system' || Object.prototype.hasOwnProperty.call(THEMES, value);
+}
+
+// This device only, like the pins. Storage that is missing or refuses means
+// the default, never a broken page.
+function loadThemeChoice() {
+  try {
+    const stored = localStorage.getItem(THEME_STORE);
+    if (isThemeChoice(stored)) return stored;
+  } catch (err) { /* the default */ }
+  return DEFAULT_THEME;
+}
+
+const SYSTEM_LIGHT = window.matchMedia('(prefers-color-scheme: light)');
+
+function resolveTheme(choice) {
+  if (choice === 'system') return SYSTEM_LIGHT.matches ? 'light' : 'dark';
+  return choice;
+}
+
+function applyTheme(choice) {
+  const theme = resolveTheme(choice);
+  document.documentElement.setAttribute('data-theme', theme);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', THEMES[theme].bg);
+}
+
+let themeChoice = loadThemeChoice();
+applyTheme(themeChoice);
+</script>
 </head>
 <body>
 <!-- Written by the server, not by script: an offline copy of this page runs
      no JavaScript, and this line is then all that says how old it is. Kept
      outside #app because every render replaces that wholesale. -->
+<div class="top">
+<div>
 <header class="brand"><img src="/icons/icon-192.png" width="28" height="28" alt="">StatusGumbo</header>
 <p class="meta" id="stamp">updated {{served_at}}</p>
+</div>
+<!-- Shown by script: without JavaScript there is nothing it could do. -->
+<div class="picker" id="picker" hidden>
+<button class="trigger" id="theme-button" type="button" aria-expanded="false" aria-haspopup="true" aria-controls="theme-menu" aria-label="Theme" title="Theme settings">
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4.098 19.902a3.75 3.75 0 0 0 5.304 0l6.401-6.402M6.75 21A3.75 3.75 0 0 1 3 17.25V4.125C3 3.504 3.504 3 4.125 3h5.25c.621 0 1.125.504 1.125 1.125v4.072M6.75 21a3.75 3.75 0 0 0 3.75-3.75V8.197M6.75 21h13.125c.621 0 1.125-.504 1.125-1.125v-5.25c0-.621-.504-1.125-1.125-1.125h-4.072M10.5 8.197l2.88-2.88c.438-.439 1.15-.439 1.59 0l3.712 3.713c.44.44.44 1.152 0 1.59l-2.879 2.88M6.75 17.25h.008v.008H6.75v-.008Z"/></svg>
+</button>
+<div class="menu" id="theme-menu" hidden></div>
+</div>
+</div>
 <div id="app"><p class="empty">loading…</p></div>
 <script>
 const REFRESH_MS = 5000;
@@ -634,6 +787,13 @@ function renderCloudSession(s) {
   // Only a session that is blocked is asked what it needs; for the rest the
   // summary of what it last did is the more useful line.
   const note = s.bucket === 'blocked' ? (s.needs_action || s.status_detail) : s.status_detail;
+  // The API's figure lags and carries no time, so it is dated by the poll
+  // that first saw it. "≤" when that poll cannot vouch for when it appeared:
+  // the first after the collector started, or after a gap in polling.
+  const asOf = known ? num(s.ctx_as_of) : null;
+  const dated = asOf !== null
+    ? ' · as of ' + (s.ctx_as_of_exact === true ? '' : '≤') + clock(asOf)
+    : '';
   return card(' at-cloud', s.url, ''
     + '<div class="row"><span class="proj">' + esc(s.title || s.repo || '—') + '</span>'
     + pinButton(cloudKey(s)) + '</div>'
@@ -645,7 +805,7 @@ function renderCloudSession(s) {
     + '<div class="row"><span class="pct ' + tone(pct) + '">'
     + (known ? 'ctx ' + Math.round(pct) + '%' : 'ctx —') + '</span>'
     + '<span class="meta">' + tokens(s.ctx_used_tokens) + (sizeText ? ' / ' + sizeText : '')
-    + '</span></div>'
+    + dated + '</span></div>'
     + '<div class="meta">' + [esc(s.model), age(s.age_secs)].filter(Boolean).join(' · ') + '</div>');
 }
 
@@ -740,9 +900,21 @@ async function tick() {
   }
 }
 
-// The last payload rendered, so a pin can redraw the page at once rather than
-// on the next refresh.
+// The last payload rendered, so a pin or a theme can redraw the page at once
+// rather than on the next refresh.
 let lastData = null;
+
+// False if there was nothing to draw or the render failed.
+function redraw() {
+  if (!lastData) return false;
+  try {
+    show(render(lastData));
+  } catch (err) {
+    show(problem('this page failed to render that update — ' + esc(err && err.message)));
+    return false;
+  }
+  return true;
+}
 
 // A card with a url is an <a>, so the tap must not also follow it.
 document.getElementById('app').addEventListener('click', event => {
@@ -753,16 +925,100 @@ document.getElementById('app').addEventListener('click', event => {
   const key = button.dataset.pin;
   if (key in pins) delete pins[key]; else pins[key] = Date.now();
   savePins();
-  if (!lastData) return;
-  try {
-    show(render(lastData));
-  } catch (err) {
-    show(problem('this page failed to render that update — ' + esc(err && err.message)));
-    return;
-  }
+  if (!redraw()) return;
   // innerHTML replaced the button, so keyboard focus would fall to the page.
   const again = Array.from(document.querySelectorAll('button.pin')).find(b => b.dataset.pin === key);
   if (again) again.focus();
+});
+
+const CHECK_ICON = '<svg class="check" width="16" height="16" viewBox="0 0 24 24" fill="none" '
+  + 'stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" '
+  + 'stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/></svg>';
+const SYSTEM_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+  + 'stroke-width="1.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" '
+  + 'd="M9 17.25v1.007a3 3 0 0 1-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0 1 15 18.257V17.25m6-12V15a2.25 '
+  + '2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 15V5.25m18 0A2.25 2.25 0 0 0 18.75 3H5.25A2.25 2.25 0 0 '
+  + '0 3 5.25m18 0V12a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 12V5.25"/></svg>';
+
+function previewTile(t) {
+  return '<span class="tile" style="background:' + t.bg + ';border-color:' + t.edge + '" aria-hidden="true">'
+    + '<span style="background:' + t.card + ';border-color:' + t.edge + '">'
+    + '<i style="background:' + t.green + '"></i><i style="background:' + t.fg + '"></i>'
+    + '<i style="background:' + t.dim + '"></i></span></span>';
+}
+
+function themeOption(choice, icon, label) {
+  return '<button class="opt" type="button" data-theme-choice="' + choice + '" aria-pressed="'
+    + (choice === themeChoice) + '">' + icon + label + CHECK_ICON + '</button>';
+}
+
+// The same menu as GitGumbo's: System first, then the palettes by name.
+function themeMenu() {
+  const names = Object.keys(THEMES).sort((a, b) => THEMES[a].label.localeCompare(THEMES[b].label));
+  return '<p class="menu-label">Theme</p>'
+    + themeOption('system', SYSTEM_ICON, 'System')
+    + names.map(name => themeOption(name, previewTile(THEMES[name]), THEMES[name].label)).join('');
+}
+
+// Applied on selection, so there is never a staged choice to confirm or
+// lose. The bars and sparklines take their colour from the palette at render
+// time, so the cards are drawn again with it.
+function chooseTheme(choice) {
+  themeChoice = choice;
+  try { localStorage.setItem(THEME_STORE, choice); } catch (err) { /* kept for this visit only */ }
+  applyTheme(choice);
+  // Marked in place, not rebuilt, so a focused option keeps its focus.
+  document.querySelectorAll('#theme-menu .opt').forEach(opt => {
+    opt.setAttribute('aria-pressed', String(opt.dataset.themeChoice === choice));
+  });
+  redraw();
+}
+
+function setMenuOpen(open) {
+  document.getElementById('theme-menu').hidden = !open;
+  document.getElementById('theme-button').setAttribute('aria-expanded', String(open));
+}
+
+function menuOpen() {
+  return !document.getElementById('theme-menu').hidden;
+}
+
+document.getElementById('theme-menu').innerHTML = themeMenu();
+document.getElementById('picker').hidden = false;
+
+document.getElementById('theme-button').addEventListener('click', () => setMenuOpen(!menuOpen()));
+
+document.getElementById('theme-menu').addEventListener('click', event => {
+  const opt = event.target.closest('button.opt');
+  if (opt && isThemeChoice(opt.dataset.themeChoice)) chooseTheme(opt.dataset.themeChoice);
+});
+
+// A tap or click anywhere outside closes it.
+document.addEventListener('mousedown', event => {
+  if (menuOpen() && !document.getElementById('picker').contains(event.target)) setMenuOpen(false);
+});
+
+// As on GitGumbo, Enter dismisses rather than picks: the choice already
+// applied when it was made, so there is nothing to commit. preventDefault
+// keeps Enter on a focused option from also clicking it. Space still picks.
+// On the trigger Enter is left alone, to open and close the menu as a click.
+document.getElementById('picker').addEventListener('keydown', event => {
+  if (!menuOpen()) return;
+  if (event.key === 'Escape') {
+    setMenuOpen(false);
+    document.getElementById('theme-button').focus();
+  } else if (event.key === 'Enter' && event.target.id !== 'theme-button') {
+    event.preventDefault();
+    setMenuOpen(false);
+    document.getElementById('theme-button').focus();
+  }
+});
+
+// "System" follows the phone's own setting as it changes, not only at load.
+SYSTEM_LIGHT.addEventListener('change', () => {
+  if (themeChoice !== 'system') return;
+  applyTheme('system');
+  redraw();
 });
 
 pins = loadPins();

@@ -111,6 +111,14 @@
     -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   }
   #stamp { margin: 0 0 10px; }
+  /* Always shown, not on hover as on GitGumbo: this page is read on a phone,
+     where there is no hover. The padding is the tap target and the negative
+     margin gives it back, so the button does not make the row taller. */
+  .pin {
+    background: none; border: 0; padding: 8px; margin: -8px -8px -8px 0;
+    color: var(--dim); cursor: pointer; line-height: 0; align-self: center;
+  }
+  .pin[aria-pressed="true"] { color: var(--fg); }
 </style>
 </head>
 <body>
@@ -472,7 +480,7 @@ function renderHostGroups(hosts, sessions) {
   return hostNames(hosts, sessions).map(host => {
     const place = places.get(host);
     const head = heading(host, place);
-    const mine = sessions.filter(s => s.host === host);
+    const mine = pinnedFirst(sessions.filter(s => s.host === host), localKey);
     if (mine.length) return head + mine.map(s => renderSession(s, place)).join('');
     // The collector's own host is listed whether or not it has ever ticked,
     // so "last tick —" is now reachable and would be a dash standing in for
@@ -484,6 +492,76 @@ function renderHostGroups(hosts, sessions) {
       + (num(seen) !== null ? 'last tick ' + clock(seen) : 'no ticks yet')
       + '</div></div>';
   }).join('');
+}
+
+// Pins live on this device only, in localStorage, as {key: last seen in ms}.
+// Storage can be missing or refuse (a private window, blocked site data), so
+// every access is wrapped and a failure means "no pins", never a broken page.
+// A pin is forgotten once its session has been off the page this long: local
+// sessions leave after fifteen quiet minutes and may come back, so this is
+// days, not minutes.
+const PIN_STORE = 'statusgumbo.pins';
+const PIN_FORGET_MS = 7 * 24 * 3600 * 1000;
+let pins;
+
+// Read once, at load. Re-reading on every render would, where storage refuses
+// writes, throw away a pin made in this visit on the next refresh.
+function loadPins() {
+  const found = Object.create(null);
+  try {
+    const raw = JSON.parse(localStorage.getItem(PIN_STORE) || '{}');
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (const key of Object.keys(raw)) {
+        if (Number.isFinite(raw[key])) found[key] = raw[key];
+      }
+    }
+  } catch (err) { /* no pins */ }
+  return found;
+}
+
+function savePins() {
+  try { localStorage.setItem(PIN_STORE, JSON.stringify(pins)); } catch (err) { /* kept for this visit only */ }
+}
+
+// Called once per render with every key on the page: a pin on screen is
+// marked seen, and one gone for longer than PIN_FORGET_MS is dropped. Seen
+// times are written at most every ten minutes, not on every 5 s refresh.
+function refreshPins(keys) {
+  const now = Date.now();
+  let changed = false;
+  for (const key of keys) {
+    if (key in pins && now - pins[key] > 600000) { pins[key] = now; changed = true; }
+  }
+  for (const key of Object.keys(pins)) {
+    if (now - pins[key] > PIN_FORGET_MS) { delete pins[key]; changed = true; }
+  }
+  if (changed) savePins();
+}
+
+function localKey(s) { return s.session_id ? 'l:' + s.session_id : ''; }
+function cloudKey(s) { return s.id ? 'c:' + s.id : ''; }
+
+// Pinned first, each half in the collector's own order, so pinning moves one
+// card and leaves every other card's relative position as it was.
+function pinnedFirst(list, keyOf) {
+  return list.filter(s => keyOf(s) in pins).concat(list.filter(s => !(keyOf(s) in pins)));
+}
+
+// GitGumbo's card pin (Lucide "pin"), so the family reads as one: filled when
+// pinned, outline when not. The click is handled once, on #app, because the
+// page's CSP blocks inline handlers and every render replaces the cards.
+function pinButton(key) {
+  if (!key) return '';
+  const on = key in pins;
+  const label = on ? 'Unpin' : 'Pin to top';
+  return '<button class="pin" type="button" data-pin="' + esc(key) + '" aria-pressed="' + on
+    + '" aria-label="' + label + '" title="' + label + '">'
+    + '<svg width="14" height="14" viewBox="0 0 24 24" fill="' + (on ? 'currentColor' : 'none')
+    + '" stroke="currentColor" stroke-width="' + (on ? '1.5' : '2')
+    + '" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<line x1="12" x2="12" y1="17" y2="22"/>'
+    + '<path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/>'
+    + '</svg></button>';
 }
 
 // A session that is also on claude.ai — cloud, or local with Remote Control
@@ -508,7 +586,8 @@ function renderSession(s, place) {
     // No host badge: the card now sits under a heading naming its host, and
     // repeating it on every card is the kind of duplicated noise that made
     // seven cards read as one wall of text.
-    + '<div class="row"><span class="proj">' + esc(s.project || '—') + '</span></div>'
+    + '<div class="row"><span class="proj">' + esc(s.project || '—') + '</span>'
+    + pinButton(localKey(s)) + '</div>'
     + '<div class="branch">' + esc(s.branch) + '</div>'
     + '<div class="bar"><div style="width:' + width + '%;background:' + toneColor(pct) + '"></div></div>'
     + '<div class="row"><span class="pct ' + tone(pct) + '">' + pctText + '</span>'
@@ -542,7 +621,8 @@ function renderCloudSession(s) {
   // summary of what it last did is the more useful line.
   const note = s.bucket === 'blocked' ? (s.needs_action || s.status_detail) : s.status_detail;
   return card(' at-cloud', s.url, ''
-    + '<div class="row"><span class="proj">' + esc(s.title || s.repo || '—') + '</span></div>'
+    + '<div class="row"><span class="proj">' + esc(s.title || s.repo || '—') + '</span>'
+    + pinButton(cloudKey(s)) + '</div>'
     + '<div class="branch">' + esc([s.repo, s.branch].filter(Boolean).join(' · ')) + '</div>'
     + '<div class="row" style="margin-top:4px"><span class="pct ' + state[1] + '">'
     + esc(state[0]) + '</span></div>'
@@ -577,7 +657,7 @@ function renderCloud(cloud) {
     ? '<div class="meta">as of ' + clock(num(cloud.as_of)) + (detail ? ' · ' + detail : '') + '</div>'
     : '';
   if (!cloud.sessions.length) return line('no active cloud sessions') + warning;
-  return head + warning + cloud.sessions.map(renderCloudSession).join('');
+  return head + warning + pinnedFirst(cloud.sessions, cloudKey).map(renderCloudSession).join('');
 }
 
 function show(html) {
@@ -601,6 +681,8 @@ function problem(text) {
 // order by saying staleness was "already said by the dimmed content" — there
 // is no dimmed content now, and nothing here should imply otherwise.
 function render(data) {
+  refreshPins(data.sessions.map(localKey).concat(
+    data.cloud && Array.isArray(data.cloud.sessions) ? data.cloud.sessions.map(cloudKey) : []));
   return renderTunnel(data.tunnel)
     + renderBudget(data.rate_limits, data.rate_limits_stale_as_of)
     + (data.sessions.length || data.hosts.length
@@ -631,6 +713,7 @@ async function tick() {
   let data;
   try {
     data = await response.json();
+    lastData = data;
   } catch (err) {
     show(problem('unreadable response from the collector — ' + esc(err && err.message)));
     return;
@@ -643,6 +726,32 @@ async function tick() {
   }
 }
 
+// The last payload rendered, so a pin can redraw the page at once rather than
+// on the next refresh.
+let lastData = null;
+
+// A card with a url is an <a>, so the tap must not also follow it.
+document.getElementById('app').addEventListener('click', event => {
+  const button = event.target.closest('button.pin');
+  if (!button) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const key = button.dataset.pin;
+  if (key in pins) delete pins[key]; else pins[key] = Date.now();
+  savePins();
+  if (!lastData) return;
+  try {
+    show(render(lastData));
+  } catch (err) {
+    show(problem('this page failed to render that update — ' + esc(err && err.message)));
+    return;
+  }
+  // innerHTML replaced the button, so keyboard focus would fall to the page.
+  const again = Array.from(document.querySelectorAll('button.pin')).find(b => b.dataset.pin === key);
+  if (again) again.focus();
+});
+
+pins = loadPins();
 tick();
 setInterval(tick, REFRESH_MS);
 </script>

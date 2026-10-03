@@ -631,3 +631,50 @@ class TestPayloadWordsStayInert(unittest.TestCase):
                 self.assertNotIn("CLOUD_STATES[", body)
         self.assertIn("lookup(PLACES, place)", function_source("heading"))
         self.assertIn("lookup(CLOUD_STATES, s.bucket)", function_source("renderCloudSession"))
+
+
+class TestPinnedCardsFloatWithinTheirGroup(unittest.TestCase):
+    """2026-10-03: a pin floats a card to the top of its own group, kept per
+    device. The order within pinned and within unpinned cards stays the
+    collector's, so pinning moves only the card that was pinned."""
+
+    def test_the_partition_is_stable(self):
+        body = function_source("pinnedFirst")
+        self.assertIn("list.filter(s => keyOf(s) in pins).concat(list.filter(s => !(keyOf(s) in pins)))", body)
+        self.assertNotIn(".sort(", body)
+
+    def test_both_groups_are_partitioned(self):
+        self.assertIn("pinnedFirst(sessions.filter(s => s.host === host), localKey)",
+                      function_source("renderHostGroups"))
+        self.assertIn("pinnedFirst(cloud.sessions, cloudKey)", function_source("renderCloud"))
+
+    def test_both_kinds_of_card_carry_the_button(self):
+        self.assertIn("pinButton(localKey(s))", function_source("renderSession"))
+        self.assertIn("pinButton(cloudKey(s))", function_source("renderCloudSession"))
+
+    def test_the_button_says_its_state(self):
+        body = function_source("pinButton")
+        for needle in ("aria-pressed", "'Unpin'", "'Pin to top'", 'title="', "esc(key)"):
+            self.assertIn(needle, body)
+
+    def test_it_is_gitgumbos_pin(self):
+        body = function_source("pinButton")
+        self.assertIn('<line x1="12" x2="12" y1="17" y2="22"/>', body)
+        self.assertIn("M5 17h14v-1.76", body)
+
+    def test_storage_failures_are_caught(self):
+        self.assertIn("try {", function_source("loadPins"))
+        self.assertIn("try {", function_source("savePins"))
+
+    def test_a_tap_on_the_pin_does_not_follow_the_card_link(self):
+        start = SOURCE.index("addEventListener('click'")
+        handler = SOURCE[start:SOURCE.index("\n});\n", start)]
+        self.assertIn("event.preventDefault();", handler)
+        self.assertIn("event.stopPropagation();", handler)
+
+    def test_no_inline_handler_the_csp_would_block(self):
+        self.assertNotIn("onclick", SOURCE)
+
+    def test_pins_are_read_once_not_on_every_render(self):
+        # Where storage refuses writes, a re-read would drop this visit's pins.
+        self.assertNotIn("loadPins()", function_source("render"))

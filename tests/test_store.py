@@ -13,6 +13,10 @@ from collector.store import (
     HISTORY_MIN_INTERVAL_SECS,
     HISTORY_SLOTS,
     DROP_HOST_SECS,
+    MAX_HOSTS,
+    MAX_SESSIONS_PER_HOST,
+    NAME_MAX,
+    TEXT_MAX,
     RATE_LIMITS_MAX_AGE_SECS,
     SessionStore,
     local_host_name,
@@ -1107,3 +1111,66 @@ class TestARemoteControlSessionLinksToClaudeAi(unittest.TestCase):
         store.ingest(tick, 1000)
         store.ingest(envelope(), 1010)
         self.assertIsNone(store.snapshot(1010)["sessions"][0]["url"])
+
+
+class TestTheStoreIsBounded(unittest.TestCase):
+    """Pruning ran only when the page polled, and nothing capped the number of
+    hosts, sessions or the size of a stored string, so any writer could grow
+    the collector's memory without limit."""
+
+    def tick(self, store, host, sid, now):
+        env = envelope(host=host)
+        env["payload"]["session_id"] = sid
+        store.ingest(env, now)
+
+    def test_sessions_per_host_are_capped_quietest_first(self):
+        store = SessionStore()
+        for i in range(MAX_SESSIONS_PER_HOST + 5):
+            self.tick(store, "box", "s%d" % i, 1000 + i)
+        self.assertEqual(len(store.sessions), MAX_SESSIONS_PER_HOST)
+        self.assertNotIn(("box", "s0"), store.sessions)
+        self.assertIn(("box", "s%d" % (MAX_SESSIONS_PER_HOST + 4)), store.sessions)
+
+    def test_hosts_are_capped_but_never_the_collectors_own(self):
+        store = SessionStore(local_host="home")
+        self.tick(store, "home", "mine", 1000)
+        for i in range(MAX_HOSTS + 5):
+            self.tick(store, "h%d" % i, "s", 1001 + i)
+        self.assertEqual(len(store.hosts), MAX_HOSTS)
+        self.assertIn("home", store.hosts)
+        self.assertIn(("home", "mine"), store.sessions)
+        self.assertNotIn("h0", store.hosts)
+        self.assertNotIn(("h0", "s"), store.sessions)
+
+    def test_expired_entries_go_on_ingest_without_a_page_polling(self):
+        store = SessionStore()
+        self.tick(store, "box", "old", 1000)
+        self.tick(store, "box", "new", 1000 + DROP_SESSION_SECS + 1)
+        self.assertNotIn(("box", "old"), store.sessions)
+
+    def test_long_text_is_cut_and_non_text_dropped(self):
+        store = SessionStore()
+        env = envelope(branch="b" * 10000)
+        env["payload"]["session_name"] = "n" * 10000
+        env["payload"]["model"]["display_name"] = {"nested": ["x"] * 1000}
+        env["payload"]["version"] = ["x"] * 1000
+        env["payload"]["fast_mode"] = "yes"
+        env["payload"]["workspace"]["current_dir"] = "/" + "p" * 10000
+        store.ingest(env, 1000)
+        session = store.snapshot(1000)["sessions"][0]
+        self.assertEqual(len(session["branch"]), TEXT_MAX)
+        self.assertEqual(len(session["session_name"]), TEXT_MAX)
+        self.assertEqual(len(session["project"]), TEXT_MAX)
+        self.assertIsNone(session["model"])
+        self.assertIsNone(session["version"])
+        self.assertIsNone(session["fast_mode"])
+
+    def test_an_overlong_host_or_session_id_is_refused(self):
+        store = SessionStore()
+        with self.assertRaises(ValueError):
+            store.ingest(envelope(host="h" * (NAME_MAX + 1)), 1000)
+        env = envelope()
+        env["payload"]["session_id"] = "s" * (NAME_MAX + 1)
+        with self.assertRaises(ValueError):
+            store.ingest(env, 1000)
+        self.assertEqual(store.sessions, {})

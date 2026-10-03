@@ -55,6 +55,13 @@ DROP_SESSION_SECS = 15 * 60  # Retention, not display. Nothing past
                              # page for a smaller diff and make a fifty-second
                              # sleep wipe an hour of sparkline.
 DROP_HOST_SECS = 60 * 60
+MAX_HOSTS = 64               # Bounds on what any writer can make the store
+MAX_SESSIONS_PER_HOST = 64   # hold. Pruning used to run only when the page
+TEXT_MAX = 200               # polled, so with no page open a flood of new
+NAME_MAX = 255               # keys grew memory without limit. At the cap the
+                             # quietest entry makes room; a text field longer
+                             # than TEXT_MAX is cut, and a host or session id
+                             # longer than NAME_MAX refuses the tick.
 BRIDGE_ID = re.compile(r"cse_[A-Za-z0-9]+")
 # What a machine may call itself on the page: one short plain word. Anything
 # else is dropped, not cleaned up -- a label no one stated is not shown.
@@ -147,6 +154,11 @@ def _clean_window(window, window_secs, now):
     if resets_at is not None and resets_at > now + window_secs + RESETS_AT_SLACK_SECS:
         raise _Implausible()
     return cleaned
+
+
+def _text(value):
+    """value if it is a string, cut to TEXT_MAX; else None."""
+    return value[:TEXT_MAX] if isinstance(value, str) else None
 
 
 def _number(value):
@@ -245,12 +257,12 @@ class SessionStore:
             raise ValueError("envelope must be an object")
         host = envelope.get("host")
         payload = envelope.get("payload")
-        if not isinstance(host, str) or not host:
+        if not isinstance(host, str) or not host or len(host) > NAME_MAX:
             raise ValueError("host must be a non-empty string")
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
         session_id = payload.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
+        if not isinstance(session_id, str) or not session_id or len(session_id) > NAME_MAX:
             raise ValueError("payload.session_id must be a non-empty string")
 
         current_dir = _dig(payload, "workspace", "current_dir")
@@ -292,7 +304,7 @@ class SessionStore:
         # any truthy non-string — so the isinstance check is the guard here,
         # not the truthiness one it replaces.
         project = (
-            os.path.basename(current_dir)
+            _text(os.path.basename(current_dir))
             if isinstance(current_dir, str) and current_dir
             else None
         )
@@ -321,14 +333,17 @@ class SessionStore:
             "host": host,
             "url": url,
             "session_id": session_id,
-            "session_name": payload.get("session_name"),
+            # Only short strings (and fast_mode's bool) are kept: anything
+            # else is a value the page would print, sized by the sender.
+            "session_name": _text(payload.get("session_name")),
             "project": project,
-            "branch": envelope.get("branch") or None,
-            "worktree": _dig(payload, "workspace", "git_worktree"),
-            "model": _dig(payload, "model", "display_name"),
-            "effort": _dig(payload, "effort", "level"),
-            "fast_mode": payload.get("fast_mode"),
-            "version": payload.get("version"),
+            "branch": _text(envelope.get("branch")) or None,
+            "worktree": _text(_dig(payload, "workspace", "git_worktree")),
+            "model": _text(_dig(payload, "model", "display_name")),
+            "effort": _text(_dig(payload, "effort", "level")),
+            "fast_mode": payload.get("fast_mode")
+            if isinstance(payload.get("fast_mode"), bool) else None,
+            "version": _text(payload.get("version")),
             "ctx_pct": ctx_pct,
             # Numbers the page does arithmetic on are kept only when finite;
             # an infinity here would reach json.dumps as a bare Infinity,
@@ -346,6 +361,7 @@ class SessionStore:
         key = (host, session_id)
         record = self.sessions.get(key)
         if record is None:
+            self._make_room(host, now)
             # first_seen and history belong to the session, not the tick, so
             # they are set once here and never carried in `fields`.
             record = {
@@ -421,12 +437,26 @@ class SessionStore:
             "where": where or (previous["where"] if previous else None),
         }
 
-    def snapshot(self, now):
-        """Prune expired entries and return the view the API serves."""
-        with self._lock:
-            return self._snapshot_locked(now)
+    def _make_room(self, host, now):
+        """Before a new session is added: prune, then evict down to the caps.
 
-    def _snapshot_locked(self, now):
+        Called with self._lock held, and only for a new key, so a steady
+        stream of ticks from known sessions costs nothing here.
+        """
+        self._prune(now)
+        if host not in self.hosts and len(self.hosts) >= MAX_HOSTS:
+            others = [h for h in self.hosts if h != self.local_host]
+            if others:
+                oldest = min(others, key=lambda h: self.hosts[h]["last_seen"])
+                del self.hosts[oldest]
+                for key in [k for k in self.sessions if k[0] == oldest]:
+                    del self.sessions[key]
+        mine = [k for k in self.sessions if k[0] == host]
+        if len(mine) >= MAX_SESSIONS_PER_HOST:
+            del self.sessions[min(mine, key=lambda k: self.sessions[k]["last_seen"])]
+
+    def _prune(self, now):
+        # Called with self._lock held.
         for key in [
             key
             for key, record in self.sessions.items()
@@ -443,6 +473,14 @@ class SessionStore:
             if now - record["last_seen"] > DROP_HOST_SECS and host != self.local_host
         ]:
             del self.hosts[host]
+
+    def snapshot(self, now):
+        """Prune expired entries and return the view the API serves."""
+        with self._lock:
+            return self._snapshot_locked(now)
+
+    def _snapshot_locked(self, now):
+        self._prune(now)
 
         # Only live sessions are served. The record above survives until
         # DROP_SESSION_SECS either way -- what ends at ACTIVE_SECS is its

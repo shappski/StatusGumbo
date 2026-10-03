@@ -29,6 +29,9 @@ ExecStart=/usr/bin/python3 -m collector.server --port 4747 $STATUSGUMBO_COLLECTO
 WorkingDirectory=@REPO@
 Restart=always
 RestartSec=5
+# The store is capped (MAX_HOSTS, MAX_SESSIONS_PER_HOST); this is the backstop
+# if that ever proves wrong. The live collector uses well under 50M.
+MemoryMax=256M
 
 [Install]
 WantedBy=default.target

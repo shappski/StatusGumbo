@@ -47,7 +47,8 @@ Or directly, from a checkout (Python 3.8+):
 
 **3. On your phone,** open `http://<collector>:4747/?t=<token>` once. The
 collector swaps the token for a cookie, so later visits need only
-`http://<collector>:4747`.
+`http://<collector>:4747`. The browser's "Add to home screen" then gives it
+the StatusGumbo icon, and it opens without the address bar.
 
 New Claude Code sessions appear within ten seconds. A running session picks
 the reporter up when it restarts.
@@ -105,6 +106,9 @@ open.
   the collector warns at startup. Under `--tls-cert` the cookie is `Secure`;
   on plain HTTP it can't be, or the browser would drop it.
 - `GET /healthz` answers `ok` without the token, for health checks.
+- So do the home-screen manifest and its icons (`/manifest.webmanifest`,
+  `/icons/…`), since Chrome fetches them without the cookie. They say nothing
+  about any session.
 
 ### In Docker
 

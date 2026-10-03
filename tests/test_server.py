@@ -695,6 +695,49 @@ class TestHealthz(ServerTestCase):
             self.assertNotIn(b"laptop", response.read())
 
 
+class TestTheHomeScreenFiles(ServerTestCase):
+    """Android's "Add to home screen" takes its icon from a web-app manifest.
+    Chrome fetches the manifest without credentials, so on a token-mode
+    collector it and its icons must answer without the token; they carry
+    nothing about any session."""
+
+    SERVER_KWARGS = {"token": TOKEN}
+
+    def test_the_manifest_answers_without_the_token(self):
+        with urllib.request.urlopen(self.url("/manifest.webmanifest"), timeout=5) as response:
+            self.assertEqual(response.headers["Content-Type"], "application/manifest+json")
+            manifest = json.loads(response.read())
+        self.assertEqual(manifest["start_url"], "/")
+        self.assertEqual(manifest["display"], "standalone")
+
+    def test_every_icon_it_names_is_served_as_a_png(self):
+        with urllib.request.urlopen(self.url("/manifest.webmanifest"), timeout=5) as response:
+            icons = json.loads(response.read())["icons"]
+        self.assertIn("maskable", [icon["purpose"] for icon in icons])
+        for icon in icons:
+            with self.subTest(src=icon["src"]):
+                with urllib.request.urlopen(self.url(icon["src"]), timeout=5) as response:
+                    self.assertEqual(response.headers["Content-Type"], "image/png")
+                    self.assertEqual(response.read(8), b"\x89PNG\r\n\x1a\n")
+
+    def test_only_the_listed_files_are_served(self):
+        for path in ("/icons/", "/icons/../server.py", "/index.html", "/server.py"):
+            with self.subTest(path=path):
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(self.url(path), timeout=5)
+                self.assertIn(caught.exception.code, (401, 403, 404))
+
+    def test_the_page_links_the_manifest_and_its_csp_allows_it(self):
+        with urllib.request.urlopen(
+            urllib.request.Request(self.url("/"), headers={"Authorization": "Bearer " + TOKEN}),
+            timeout=5,
+        ) as response:
+            body = response.read()
+            csp = response.headers["Content-Security-Policy"]
+        self.assertIn(b'<link rel="manifest" href="/manifest.webmanifest">', body)
+        self.assertIn("manifest-src 'self'", csp)
+
+
 class TestMainAsAContainerRunsIt(unittest.TestCase):
     """The real entry point, the way the Docker image starts it."""
 

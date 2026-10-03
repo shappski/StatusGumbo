@@ -34,6 +34,16 @@ from collector.store import SessionStore, local_host_name, local_place
 MAX_BODY_BYTES = 256 * 1024
 IDLE_TIMEOUT_SECS = 60
 INDEX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+# What a phone needs to put the page on its home screen. A fixed table, so no
+# part of a request path is ever joined onto a filesystem path. Served without
+# the token, like /healthz: Chrome fetches the manifest without credentials,
+# and none of it says anything about the sessions.
+STATIC_FILES = {
+    "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+    "/icons/icon-192.png": ("icons/icon-192.png", "image/png"),
+    "/icons/icon-512.png": ("icons/icon-512.png", "image/png"),
+    "/icons/icon-maskable-512.png": ("icons/icon-maskable-512.png", "image/png"),
+}
 TUNNEL_UNIT = "statusgumbo-tunnel.service"
 STAMP_PLACEHOLDER = "{{served_at}}"
 COOKIE_NAME = "statusgumbo_token"
@@ -376,7 +386,7 @@ def content_security_policy(body):
     )
     # Styles must allow inline: the cards' bars are style attributes.
     return ("default-src 'none'; script-src %s; style-src 'unsafe-inline'; "
-            "connect-src 'self'; img-src 'self' data:; base-uri 'none'; "
+            "connect-src 'self'; img-src 'self' data:; manifest-src 'self'; base-uri 'none'; "
             "form-action 'none'; frame-ancestors 'none'" % (hashes or "'none'"))
 
 
@@ -657,6 +667,17 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
                              ("Content-Security-Policy", content_security_policy(body)),
                              ("Referrer-Policy", "no-referrer")],
                 )
+                return
+            if path in STATIC_FILES:
+                name, content_type = STATIC_FILES[path]
+                try:
+                    with open(os.path.join(os.path.dirname(INDEX_PATH), name), "rb") as handle:
+                        body = handle.read()
+                except OSError:
+                    self._respond(404, b"not found")
+                    return
+                self._respond(200, body, content_type,
+                              headers=[("Cache-Control", "max-age=86400")])
                 return
             self._respond(404, b"not found")
 

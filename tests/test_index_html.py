@@ -678,3 +678,15 @@ class TestPinnedCardsFloatWithinTheirGroup(unittest.TestCase):
     def test_pins_are_read_once_not_on_every_render(self):
         # Where storage refuses writes, a re-read would drop this visit's pins.
         self.assertNotIn("loadPins()", function_source("render"))
+
+
+class TheLogoShowsOnAWideScreenOnly(unittest.TestCase):
+    """On a phone the cards get every line; on a laptop there is room."""
+
+    def test_the_header_is_hidden_unless_the_screen_is_wide(self):
+        self.assertIn(".brand { display: none; }", SOURCE)
+        wide = SOURCE[SOURCE.index("@media (min-width: 700px)"):]
+        self.assertIn("display: flex", wide[:wide.index("}\n  }")])
+
+    def test_it_uses_an_icon_the_collector_serves(self):
+        self.assertIn('<header class="brand"><img src="/icons/icon-192.png"', SOURCE)

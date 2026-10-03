@@ -611,3 +611,23 @@ class TestARemoteControlCardOpensOnClaudeAi(unittest.TestCase):
     def test_no_link_is_nested_inside_a_card(self):
         # An <a> inside an <a> is invalid HTML, and browsers split it apart.
         self.assertNotIn('<a class="proj"', SOURCE)
+
+
+class TestPayloadWordsStayInert(unittest.TestCase):
+    def test_esc_covers_both_quote_characters(self):
+        # An attribute quoted with ' would otherwise be closable by the payload.
+        body = function_source("esc")
+        self.assertIn(".replace(/\"/g, '&quot;')", body)
+        self.assertIn(".replace(/'/g, '&#39;')", body)
+
+    def test_lookups_only_find_the_tables_own_entries(self):
+        # `constructor` is a plain [a-z0-9-] word the collector passes as a
+        # place; on a bare object lookup it finds Object's constructor.
+        self.assertIn("hasOwnProperty.call(table, key)", function_source("lookup"))
+        for name in ("placeClass", "heading", "renderCloudSession"):
+            with self.subTest(function=name):
+                body = function_source(name)
+                self.assertNotIn("PLACES[", body)
+                self.assertNotIn("CLOUD_STATES[", body)
+        self.assertIn("lookup(PLACES, place)", function_source("heading"))
+        self.assertIn("lookup(CLOUD_STATES, s.bucket)", function_source("renderCloudSession"))

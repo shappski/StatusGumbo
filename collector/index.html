@@ -133,7 +133,15 @@ function esc(value) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// A lookup in one of the tables below that only ever finds the table's own
+// entries. A payload word such as `constructor` or `__proto__` would
+// otherwise reach Object.prototype and come back as something truthy.
+function lookup(table, key) {
+  return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined;
 }
 
 // The one gate every payload-derived number passes through before it is
@@ -397,11 +405,11 @@ const PLACES = {
 
 function placeClass(place) {
   if (!place) return '';
-  return PLACES[place] ? ' at-' + place : ' at-other';
+  return lookup(PLACES, place) ? ' at-' + place : ' at-other';
 }
 
 function heading(name, place) {
-  const known = PLACES[place];
+  const known = lookup(PLACES, place);
   let mark = '';
   if (!place) mark = '';
   else if (known) mark = known[1] ? '<span class="where">' + known[1] + '</span>' : '';
@@ -529,7 +537,7 @@ function renderCloudSession(s) {
   const known = pct !== null;
   const width = known ? Math.max(0, Math.min(100, pct)) : 0;
   const sizeText = tokens(s.ctx_window_size);
-  const state = CLOUD_STATES[s.bucket] || [s.bucket || 'unknown', 'dim'];
+  const state = lookup(CLOUD_STATES, s.bucket) || [s.bucket || 'unknown', 'dim'];
   // Only a session that is blocked is asked what it needs; for the rest the
   // summary of what it last did is the more useful line.
   const note = s.bucket === 'blocked' ? (s.needs_action || s.status_detail) : s.status_detail;

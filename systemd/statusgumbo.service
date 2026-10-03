@@ -32,6 +32,11 @@ RestartSec=5
 # The store is capped (MAX_HOSTS, MAX_SESSIONS_PER_HOST); this is the backstop
 # if that ever proves wrong. The live collector uses well under 50M.
 MemoryMax=256M
+# The collector never needs to gain privileges (no setuid helpers, no file
+# capabilities). ProtectSystem= and friends are not used: in a user unit they
+# need an unprivileged user namespace, which Ubuntu 24.04's AppArmor restricts
+# by default, and the unit would then fail to start.
+NoNewPrivileges=yes
 
 [Install]
 WantedBy=default.target

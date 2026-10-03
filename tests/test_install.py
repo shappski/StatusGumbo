@@ -49,6 +49,7 @@ class InstallScriptTestCase(unittest.TestCase):
         with_tunnel_env=True,
         existing=None,
         tailscale_stub=TAILSCALE_STUB,
+        install=INSTALL,
     ):
         """Run install.sh against a throwaway $HOME.
 
@@ -87,7 +88,7 @@ class InstallScriptTestCase(unittest.TestCase):
         env["HOME"] = home
         env["PATH"] = stubs + os.pathsep + env["PATH"]
         return subprocess.run(
-            ["sh", INSTALL],
+            ["sh", install],
             env=env,
             capture_output=True,
             text=True,
@@ -383,6 +384,64 @@ class TestTheCollectorUnitTakesMachineLocalArguments(unittest.TestCase):
 
     def test_cloud_is_not_hard_coded(self):
         self.assertNotIn("--cloud", self.execstart())
+
+
+class TestTheCollectorCannotGainPrivileges(unittest.TestCase):
+    def test_no_new_privileges_is_set(self):
+        path = os.path.join(REPO, "systemd", "statusgumbo.service")
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        self.assertIn("NoNewPrivileges=yes", lines)
+
+
+class TestTheCheckoutPathReachesTheUnitsVerbatim(InstallScriptTestCase):
+    """The checkout path is spliced into two units by sed. `&` and `|` mean
+    something in a sed replacement, and systemd reads `%`, whitespace, quotes
+    and backslashes in its own ways, so the installer is run from a copy of
+    the repo at a path holding each kind of character."""
+
+    def run_from(self, dirname):
+        parent = tempfile.mkdtemp(prefix="statusgumbo-path-")
+        self.addCleanup(shutil.rmtree, parent, True)
+        checkout = os.path.join(parent, dirname)
+        os.makedirs(checkout)
+        shutil.copy2(INSTALL, checkout)
+        shutil.copy2(os.path.join(REPO, "report.sh"), checkout)
+        shutil.copytree(os.path.join(REPO, "systemd"), os.path.join(checkout, "systemd"))
+        shutil.copytree(os.path.join(REPO, "contrib"), os.path.join(checkout, "contrib"))
+        install = os.path.join(checkout, "install.sh")
+        return checkout, self.run_installer(SYSTEMCTL_OK, install=install)
+
+    def unit(self, name):
+        path = os.path.join(self.home, ".config", "systemd", "user", name)
+        with open(path, encoding="utf-8") as fh:
+            return fh.read().splitlines()
+
+    def test_sed_metacharacters_are_written_literally(self):
+        checkout, result = self.run_from("a&b|c")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("WorkingDirectory=" + checkout, self.unit("statusgumbo.service"))
+        self.assertIn(
+            "ExecStart=" + checkout + "/contrib/coder/tunnel.sh",
+            self.unit("statusgumbo-tunnel.service"),
+        )
+
+    def test_a_path_systemd_would_misread_is_refused_before_anything_is_installed(self):
+        for dirname in ("a b", "a%h", 'a"b', "a'b", "a\\b"):
+            with self.subTest(dirname=dirname):
+                _, result = self.run_from(dirname)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("cannot install from", result.stderr)
+                self.assertFalse(
+                    os.path.exists(os.path.join(self.home, ".config", "systemd")),
+                    "a unit was written before the refusal",
+                )
+                self.assertFalse(
+                    os.path.lexists(
+                        os.path.join(self.home, ".claude", "statusgumbo-report.sh")
+                    ),
+                    "the reporter was linked before the refusal",
+                )
 
 
 class TestTunnelNeverStartsTheWorkspace(unittest.TestCase):

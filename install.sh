@@ -9,6 +9,22 @@ set -eu
 REPO=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 UNIT_DIR="$HOME/.config/systemd/user"
 
+# The checkout path is written into two systemd units. systemd reads `%` as a
+# specifier and splits ExecStart on whitespace, and quotes and backslashes
+# change how it parses a line, so a path holding any of those would install a
+# unit that runs something else or nothing. Refuse it rather than guess.
+case "$REPO" in
+    *[[:space:][:cntrl:]%\\\"\']*)
+        printf 'StatusGumbo: cannot install from %s\n' "$REPO" >&2
+        printf '  this installer does not write a path holding whitespace, %%, a quote or a\n  backslash into a systemd unit.\n' >&2
+        printf '  Move the checkout to a plainer path and re-run.\n' >&2
+        exit 1
+        ;;
+esac
+# What is left can still hold `&` or `|`, which mean something in a sed
+# replacement; escape them so the path lands in the unit verbatim.
+REPO_SED=$(printf '%s\n' "$REPO" | sed 's/[&|]/\\&/g')
+
 printf 'StatusGumbo — installing from %s\n\n' "$REPO"
 
 # 1. The reporter. This is the supported integration: the machine keeps its own
@@ -60,7 +76,7 @@ fi
 
 # 2. Install and start the collector unit.
 mkdir -p "$UNIT_DIR"
-sed "s|@REPO@|$REPO|g" "$REPO/systemd/statusgumbo.service" \
+sed "s|@REPO@|$REPO_SED|g" "$REPO/systemd/statusgumbo.service" \
     > "$UNIT_DIR/statusgumbo.service"
 systemctl --user daemon-reload
 systemctl --user enable --now statusgumbo.service
@@ -155,7 +171,7 @@ if [ -f "$TUNNEL_ENV" ]; then
     # Substituted, not copied: ExecStart is this repo's tunnel.sh now, so a
     # verbatim copy would install a literal @REPO@ and fail at start with a
     # bare 203/EXEC.
-    sed "s|@REPO@|$REPO|g" "$REPO/contrib/coder/statusgumbo-tunnel.service" \
+    sed "s|@REPO@|$REPO_SED|g" "$REPO/contrib/coder/statusgumbo-tunnel.service" \
         > "$UNIT_DIR/statusgumbo-tunnel.service"
     systemctl --user daemon-reload
     # Non-fatal on purpose. Under `set -e` a failure here aborted the whole

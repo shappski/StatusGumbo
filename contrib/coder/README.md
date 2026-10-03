@@ -31,6 +31,29 @@ with `CODER_HOST` in its environment.
 The unit sets `CODER_SSH_DISABLE_AUTOSTART=true` so that the tunnel never
 wakes a stopped Coder workspace. Drop it if your host isn't Coder.
 
+## On a shared machine
+
+By default the tunnel lands on the remote's `127.0.0.1:4747`, and every user
+and process on that machine can reach it. Without a token, any of them can
+read the page's data and post ticks. With one, while the tunnel is down, one
+of them can listen on port 4747 and collect the token from the next tick. On
+a machine only you use, that doesn't matter. On a shared one, forward to a
+Unix socket instead, which only your user on the remote can open. Add the
+path to `tunnel.env`:
+
+    STATUSGUMBO_TUNNEL_REMOTE=/run/user/<remote uid>/statusgumbo.sock
+
+and point the remote's reporter at it:
+
+    sh install-reporter.sh --socket /run/user/<remote uid>/statusgumbo.sock
+
+This needs the remote's SSH server to accept Unix-socket forwards (OpenSSH
+does, with `AllowStreamLocalForwarding` on, and creates the socket mode 0600).
+A socket left behind by a dropped connection blocks the next forward unless
+the server's `StreamLocalBindUnlink` is `yes`. **Not yet tried against a
+Coder workspace's own SSH server.** Check that a ticking session shows up
+before relying on it.
+
 ## On the page
 
 The collector asks systemd about `statusgumbo-tunnel.service` and reads

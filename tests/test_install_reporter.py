@@ -270,3 +270,77 @@ class TestCheck(InstallReporterTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTokenTransport(InstallReporterTestCase):
+    """The token travels on every tick, so how it gets to the reporter and
+    over what wire both matter."""
+
+    def test_a_token_file_keeps_the_token_off_argv(self):
+        with open(self.path("tok"), "w") as fh:
+            fh.write(TOKEN + "\n")
+        self.install("--token-file", self.path("tok"))
+        with open(self.path(".config", "statusgumbo", "token")) as fh:
+            self.assertEqual(fh.read().strip(), TOKEN)
+
+    def test_plain_http_beyond_loopback_and_tailscale_warns(self):
+        for url in ("http://192.168.1.20:4747", "http://collector.example:4747",
+                    "http://100.200.1.1:4747"):
+            with self.subTest(url=url):
+                result = self.run_script("--url", url, "--token", TOKEN)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("unencrypted", result.stderr)
+
+    def test_loopback_tailscale_and_https_do_not_warn(self):
+        for url in ("http://127.0.0.1:9", "http://localhost:9", "http://[::1]:9",
+                    "http://100.101.102.103:9", "http://box.tail1.ts.net:9",
+                    "https://collector.example"):
+            with self.subTest(url=url):
+                result = self.run_script("--url", url, "--token", TOKEN)
+                self.assertNotIn("unencrypted", result.stderr)
+
+    def test_a_socket_is_saved_and_must_be_absolute(self):
+        self.install("--socket", "/run/user/1000/statusgumbo.sock")
+        with open(self.path(".config", "statusgumbo", "socket")) as fh:
+            self.assertEqual(fh.read().strip(), "/run/user/1000/statusgumbo.sock")
+        result = self.run_script("--url", DEAD_URL, "--socket", "relative.sock")
+        self.assertNotEqual(result.returncode, 0)
+
+
+class TestCheckThroughASocket(InstallReporterTestCase):
+    def test_check_reaches_the_collector_through_the_socket(self):
+        import socketserver
+        import threading
+        from http.server import BaseHTTPRequestHandler
+
+        seen = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append((self.path, self.headers.get("Authorization")))
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+            def log_message(self, *args):
+                pass
+
+        class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+            daemon_threads = True
+
+            def get_request(self):
+                request, _ = super().get_request()
+                return request, ("local", 0)
+
+        sock = self.path("collector.sock")
+        server = Server(sock, Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.install("--socket", sock)
+        # A quote in the token must not reach curl's config.
+        self.env["STATUSGUMBO_TOKEN"] = 'x" -o /tmp/pwned "' + TOKEN
+        result = self.run_script("--check")
+        self.assertIn("accepts this machine", result.stdout)
+        self.assertIn(("/api/sessions", None), seen)

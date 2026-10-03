@@ -51,6 +51,7 @@ cat > "$WORK/bin/ssh" <<'STUB'
 n=$(cat "$STUB_COUNT" 2>/dev/null || echo 0)
 n=$((n + 1))
 printf '%s' "$n" > "$STUB_COUNT"
+[ -z "${STUB_ARGS:-}" ] || printf '%s\n' "$@" > "$STUB_ARGS"
 dur=$(sed -n "${n}p" "$STUB_PLAN" 2>/dev/null || true)
 [ -n "$dur" ] || dur=0
 # Milliseconds. Whole seconds put the measurement inside its own rounding
@@ -219,6 +220,35 @@ elif [ "$after" -lt "$(( before - MARGIN_MS ))" ]; then
     pass "a healthy run resets the delay (${before}ms before, ${after}ms after)"
 else
     fail "a healthy run resets the delay (${before}ms before, ${after}ms after)"
+fi
+
+# The forward's remote end: loopback port 4747 by default, or a Unix socket
+# when STATUSGUMBO_TUNNEL_REMOTE is a path. The host always follows --, so a
+# CODER_HOST beginning with - can't become an ssh option.
+printf '5\n' > "$WORK/plan-args"
+export STUB_ARGS="$WORK/args"
+: > "$STUB_ARGS"
+run_wrapper "$WORK/plan-args" 1
+if grep -qx -- '4747:127.0.0.1:4747' "$STUB_ARGS" \
+   && [ "$(tail -n 2 "$STUB_ARGS" | tr '\n' ' ')" = '-- stub-host ' ] \
+   && ! grep -q StreamLocalBindUnlink "$STUB_ARGS"; then
+    pass 'the default forward is loopback port 4747, host after --'
+else
+    fail "the default forward is loopback port 4747, host after -- (args: $(tr '\n' ' ' < "$STUB_ARGS"))"
+fi
+: > "$STUB_ARGS"
+STATUSGUMBO_TUNNEL_REMOTE=/run/user/1000/statusgumbo.sock run_wrapper "$WORK/plan-args" 1
+if grep -qx -- '/run/user/1000/statusgumbo.sock:127.0.0.1:4747' "$STUB_ARGS" \
+   && grep -qx -- 'StreamLocalBindUnlink=yes' "$STUB_ARGS"; then
+    pass 'an absolute STATUSGUMBO_TUNNEL_REMOTE forwards to a remote Unix socket'
+else
+    fail "an absolute STATUSGUMBO_TUNNEL_REMOTE forwards to a remote Unix socket (args: $(tr '\n' ' ' < "$STUB_ARGS"))"
+fi
+unset STUB_ARGS
+if STATUSGUMBO_TUNNEL_REMOTE='-oProxyCommand=x' CODER_HOST=h sh "$SCRIPT" >/dev/null 2>&1; then
+    fail 'a STATUSGUMBO_TUNNEL_REMOTE that is neither port nor path is refused'
+else
+    pass 'a STATUSGUMBO_TUNNEL_REMOTE that is neither port nor path is refused'
 fi
 
 if [ "$fails" -eq 0 ]; then

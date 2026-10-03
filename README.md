@@ -122,7 +122,7 @@ status-line setup. `install-reporter.sh` does that part better; use it.
 
 ### One command
 
-    sh install-reporter.sh --url URL [--token TOKEN] [--place WORD]
+    sh install-reporter.sh --url URL [--token-file FILE | --token TOKEN] [--place WORD] [--socket PATH]
     curl -fsSL https://raw.githubusercontent.com/shappski/StatusGumbo/master/install-reporter.sh \
       | sh -s -- --url URL --token TOKEN
 
@@ -210,6 +210,7 @@ terminal leaves no ghost card.
 | `url` | `STATUSGUMBO_URL` | The collector. The environment wins. |
 | `token` | `STATUSGUMBO_TOKEN`, `STATUSGUMBO_TOKEN_FILE` | The shared token, if the collector has one. |
 | `place` | `STATUSGUMBO_PLACE` | Where this machine is ([below](#where-a-session-runs)). |
+| `socket` | `STATUSGUMBO_SOCKET` | Post through this Unix socket instead of TCP, for a tunnel that forwards to one ([contrib/coder](contrib/coder/README.md#on-a-shared-machine)). The URL then defaults to `http://localhost`. |
 | | `STATUSGUMBO_HOST` | The name to report under. Default: `hostname -s`. Set it everywhere or nowhere, or one machine splits into two headings. |
 
 ## Where a session runs

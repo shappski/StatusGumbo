@@ -40,6 +40,21 @@ SETTLE_SECS=${STATUSGUMBO_TUNNEL_SETTLE_SECS:-5}
 # it exists to slow down.
 HEALTHY_SECS=${STATUSGUMBO_TUNNEL_HEALTHY_SECS:-900}
 
+# Where the forward lands on the remote. The default, port 4747 on its
+# loopback, is reachable by every user and process on that machine: on a
+# shared box any of them can read the page's data and post ticks, and while
+# the tunnel is down one can listen on the port and collect a reporter's
+# token. An absolute path instead forwards to a Unix socket there, which sshd
+# creates for the connecting user alone (OpenSSH's StreamLocalBindMask makes
+# it 0600); the remote reporter then needs STATUSGUMBO_SOCKET set to the same
+# path. See contrib/coder/README.md.
+REMOTE=${STATUSGUMBO_TUNNEL_REMOTE:-4747}
+case $REMOTE in
+    /*) unlink_opt='-o StreamLocalBindUnlink=yes' ;;
+    *[!0-9]*|'') printf 'STATUSGUMBO_TUNNEL_REMOTE must be a port or an absolute path\n' >&2; exit 2 ;;
+    *) unlink_opt= ;;
+esac
+
 # The runtime dir, not the home dir: this answer describes a live process, and
 # a stale "up" surviving a reboot would silence the alarm exactly when it is
 # most needed. tmpfs forgets for us. collector/server.py reads this path.
@@ -68,6 +83,8 @@ while :; do
     # would spin while the forward quietly lived and died with someone else's
     # session. Both flags are needed: `none` declines to join a master, `no`
     # declines to become one.
+    # $unlink_opt is unquoted on purpose: empty, it must add no argument.
+    # shellcheck disable=SC2086
     ssh -N \
         -o ExitOnForwardFailure=yes \
         -o ServerAliveInterval=30 \
@@ -75,7 +92,8 @@ while :; do
         -o BatchMode=yes \
         -o ControlMaster=no \
         -o ControlPath=none \
-        -R 4747:127.0.0.1:4747 "$CODER_HOST" &
+        $unlink_opt \
+        -R "$REMOTE:127.0.0.1:4747" -- "$CODER_HOST" &
     ssh_pid=$!
 
     # Publish up only once the connection has stood up for SETTLE_SECS, in a

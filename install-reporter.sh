@@ -1,7 +1,8 @@
 #!/bin/sh
 # Install the StatusGumbo reporter for Claude Code on this machine.
 #
-#   sh install-reporter.sh --url http://collector:4747 [--token T] [--place WORD]
+#   sh install-reporter.sh --url http://collector:4747 [--token-file F | --token T]
+#                          [--place WORD] [--socket /path/on/this/machine.sock]
 #   sh install-reporter.sh --check        # is this machine still reporting?
 #   sh install-reporter.sh --uninstall    # put settings.json back
 #
@@ -13,7 +14,7 @@
 #   ~/.claude/statusgumbo-report.sh       the reporter
 #   ~/.claude/statusgumbo-statusline.sh   a wrapper that reports each tick, then
 #                                         runs your own status line unchanged
-#   ~/.config/statusgumbo/{url,token,place,statusline-command}
+#   ~/.config/statusgumbo/{url,token,place,socket,statusline-command}
 #   ~/.claude/settings.json               statusLine -> the wrapper (your old
 #                                         command is saved, never edited),
 #                                         refreshInterval 10 if unset, and the
@@ -39,15 +40,19 @@ HOOK='if [ -x "$HOME/.claude/statusgumbo-report.sh" ]; then "$HOME/.claude/statu
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 say() { printf '  %s\n' "$1"; }
 
-mode=install url='' token=${STATUSGUMBO_TOKEN:-} place=''
+mode=install url='' token=${STATUSGUMBO_TOKEN:-} place='' socket=''
 while [ $# -gt 0 ]; do
     case $1 in
         --url) [ $# -ge 2 ] || die "--url needs a value"; url=$2; shift 2 ;;
         --token) [ $# -ge 2 ] || die "--token needs a value"; token=$2; shift 2 ;;
+        # A file keeps the token out of argv, where any user's ps can see it.
+        --token-file) [ $# -ge 2 ] || die "--token-file needs a value"
+            token=$(tr -d ' \t\r\n' < "$2") || die "cannot read $2"; shift 2 ;;
+        --socket) [ $# -ge 2 ] || die "--socket needs a value"; socket=$2; shift 2 ;;
         --place) [ $# -ge 2 ] || die "--place needs a value"; place=$2; shift 2 ;;
         --check) mode=check; shift ;;
         --uninstall) mode=uninstall; shift ;;
-        -h|--help) sed -n '2,12p' "$0" 2>/dev/null || true; exit 0 ;;
+        -h|--help) sed -n '2,13p' "$0" 2>/dev/null || true; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -93,7 +98,9 @@ fetch() {
     if [ -f "$here/$1" ] && [ -f "$here/install-reporter.sh" ]; then
         cp "$here/$1" "$2.tmp"
     else
-        curl -fsSL "$SOURCE/$1" -o "$2.tmp" || { rm -f "$2.tmp"; die "could not download $SOURCE/$1"; }
+        # https only, redirects included; file: is for testing a checkout.
+        curl -fsSL --proto '=https,file' --proto-redir '=https' "$SOURCE/$1" -o "$2.tmp" \
+            || { rm -f "$2.tmp"; die "could not download $SOURCE/$1"; }
     fi
     chmod 755 "$2.tmp"
     mv "$2.tmp" "$2"
@@ -156,16 +163,23 @@ check() {
         fi
     done
 
-    target=${STATUSGUMBO_URL:-$(cat "$CFG/url" 2>/dev/null || true)}
+    # Read the way report.sh reads them, so a pass here means the reporter
+    # will get through too.
+    sock=${STATUSGUMBO_SOCKET:-$(tr -d ' \t\r\n' < "$CFG/socket" 2>/dev/null || true)}
+    case $sock in /*) ;; *) sock= ;; esac
+    target=${STATUSGUMBO_URL:-$(tr -d ' \t\r\n' < "$CFG/url" 2>/dev/null || true)}
     target=${target%/}
+    if [ -z "$target" ] && [ -n "$sock" ]; then target=http://localhost; fi
     if [ -z "$target" ]; then
         bad "no collector URL (STATUSGUMBO_URL or $CFG/url)"
-    elif ! curl -fsS -m 5 -o /dev/null "$target/healthz" 2>/dev/null; then
-        bad "collector not reachable at $target"
+    elif ! curl -fsS -m 5 ${sock:+--unix-socket} ${sock:+"$sock"} -o /dev/null "$target/healthz" 2>/dev/null; then
+        bad "collector not reachable at $target${sock:+ through $sock}"
     else
-        tok=${STATUSGUMBO_TOKEN:-$(cat "$CFG/token" 2>/dev/null || true)}
-        code=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" \
-            | curl -s -m 5 -o /dev/null -w '%{http_code}' -K - "$target/api/sessions") || code=000
+        tok=${STATUSGUMBO_TOKEN:-$(tr -d ' \t\r\n' < "${STATUSGUMBO_TOKEN_FILE:-$CFG/token}" 2>/dev/null || true)}
+        # It goes into a curl config below, where a quote would break out.
+        case $tok in *[!A-Za-z0-9._~-]*) tok= ;; esac
+        code=$( { [ -z "$tok" ] || printf 'header = "Authorization: Bearer %s"\n' "$tok"; } \
+            | curl -s -m 5 ${sock:+--unix-socket} ${sock:+"$sock"} -o /dev/null -w '%{http_code}' -K - "$target/api/sessions") || code=000
         case $code in
             200) ok "collector at $target accepts this machine" ;;
             401) bad "collector at $target refuses this machine's token" ;;
@@ -226,6 +240,28 @@ if [ -n "$place" ]; then
     case $place in *[!a-z0-9-]*) die "--place must be one word of a-z 0-9 -" ;; esac
     [ ${#place} -le 24 ] || die "--place must be at most 24 characters"
 fi
+if [ -n "$socket" ]; then
+    case $socket in /*) ;; *) die "--socket must be an absolute path" ;; esac
+    case $socket in *[[:space:]]*) die "--socket must not contain spaces" ;; esac
+fi
+
+# Plain http carries the token in the clear on every tick. That's fine on
+# loopback and inside a tailnet (WireGuard encrypts it), and nowhere else.
+if [ -n "$token" ] && [ -z "$socket" ]; then
+    case $url in http://*)
+        hostpart=${url#http://}; hostpart=${hostpart%%/*}
+        case $hostpart in \[*) hostpart=${hostpart%%]*}]; ;; *) hostpart=${hostpart%%:*} ;; esac
+        case $hostpart in
+            localhost|127.*|'[::1]'|*.ts.net) ;;
+            100.*)
+                second=${hostpart#100.}; second=${second%%.*}
+                if [ "$second" -lt 64 ] 2>/dev/null || [ "$second" -gt 127 ] 2>/dev/null; then
+                    printf 'warning: %s is plain http outside loopback and Tailscale; the token will cross the network unencrypted. Use https.\n' "$url" >&2
+                fi ;;
+            *) printf 'warning: %s is plain http outside loopback and Tailscale; the token will cross the network unencrypted. Use https.\n' "$url" >&2 ;;
+        esac ;;
+    esac
+fi
 
 printf 'StatusGumbo reporter, installing for %s\n' "$url"
 mkdir -p "$CLAUDE" "$CFG"
@@ -247,6 +283,10 @@ if [ -n "$token" ]; then
 fi
 if [ -n "$place" ]; then
     printf '%s\n' "$place" > "$CFG/place"
+fi
+if [ -n "$socket" ]; then
+    printf '%s\n' "$socket" > "$CFG/socket"
+    say "posting through the Unix socket $socket"
 fi
 
 current=$(jq -r '.statusLine.command // empty' "$SETTINGS" 2>/dev/null) || current=

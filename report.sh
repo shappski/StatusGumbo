@@ -52,6 +52,21 @@ if [ -z "${STATUSGUMBO_URL:-}" ]; then
         STATUSGUMBO_URL=${STATUSGUMBO_URL%/}
     fi
 fi
+# A Unix socket to post through instead of TCP: the remote end of a tunnel
+# that forwards to one (contrib/coder/README.md), which only this user can
+# open. The URL then only names the path, so it defaults to localhost.
+socket=${STATUSGUMBO_SOCKET:-}
+if [ -z "$socket" ]; then
+    socketfile=${XDG_CONFIG_HOME:-$HOME/.config}/statusgumbo/socket
+    if [ -r "$socketfile" ]; then
+        socket=$(tr -d ' \t\r\n' < "$socketfile" 2>/dev/null) || socket=
+    fi
+fi
+case $socket in /*[[:space:]]*) socket= ;; /*) ;; *) socket= ;; esac
+if [ -n "$socket" ] && [ -z "${STATUSGUMBO_URL:-}" ]; then
+    STATUSGUMBO_URL=http://localhost
+fi
+
 # Checked whichever way it came: a value starting with "-" would reach curl
 # as an option.
 case ${STATUSGUMBO_URL:-} in
@@ -189,7 +204,8 @@ post() {
               '{host: $host, branch: $branch, payload: .}
                + (if $where == "" then {} else {where: $where} end)
                + (if $bridge == "" then {} else {bridge: $bridge} end)' \
-        | $detach curl -s -m 1 -X POST "$STATUSGUMBO_URL/ingest" \
+        | $detach curl -s -m 1 ${socket:+--unix-socket} ${socket:+"$socket"} \
+              -X POST "$STATUSGUMBO_URL/ingest" \
               -H 'Content-Type: application/json' --data-binary @- \
               -K /dev/fd/3 3<<EOF
 $auth

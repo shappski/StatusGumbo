@@ -301,6 +301,34 @@ for bad in 'ftp://127.0.0.1:49996' '-K/etc/passwd' 'http://127.0.0.1:49996 -v'; 
 done
 rm -rf "$CFG"
 
+# 4f. A Unix socket instead of TCP, for a tunnel that forwards to one. Set,
+#     the post goes through it and no URL is needed.
+CFG=$(mktemp -d)
+SOCK="$CFG/collector.sock"
+CAPTURE=$(mktemp)
+python3 "$ROOT/tests/helpers/capture_post.py" "$SOCK" "$CAPTURE" &
+capture_pid=$!
+sleep 1
+env -u STATUSGUMBO_URL XDG_CONFIG_HOME="$CFG" STATUSGUMBO_SOCKET="$SOCK" sh "$SCRIPT" < "$PAYLOAD" >/dev/null 2>&1
+wait "$capture_pid" 2>/dev/null || true
+if [ "$(jq -r '.payload.session_id' < "$CAPTURE" 2>/dev/null)" = "$(jq -r .session_id < "$PAYLOAD")" ]; then
+    pass 'STATUSGUMBO_SOCKET posts through a Unix socket, with no URL needed'
+else
+    fail 'STATUSGUMBO_SOCKET posts through a Unix socket, with no URL needed'
+fi
+: > "$CAPTURE"
+mkdir -p "$CFG/statusgumbo"
+printf '%s\n' "$SOCK" > "$CFG/statusgumbo/socket"
+rm -f "$SOCK"
+python3 "$ROOT/tests/helpers/capture_post.py" "$SOCK" "$CAPTURE" &
+capture_pid=$!
+sleep 1
+env -u STATUSGUMBO_URL -u STATUSGUMBO_SOCKET XDG_CONFIG_HOME="$CFG" sh "$SCRIPT" < "$PAYLOAD" >/dev/null 2>&1
+wait "$capture_pid" 2>/dev/null || true
+if [ -s "$CAPTURE" ]; then pass 'the socket file is read without any env'
+else fail 'the socket file is read without any env'; fi
+rm -rf "$CFG" "$CAPTURE"
+
 # 5. The documented integration snippet itself, in both states that matter.
 #    Caught for real on deployment: the first version of this hook was
 #    `[ -x ... ] && printf ... | reporter`, which is the last command in the

@@ -387,6 +387,51 @@ class TestPoller(unittest.TestCase):
         self.assertEqual(poller.poll_once(), POLL_SECS)
         self.assertEqual(poller.view(NOW)["state"], "login_expired")
 
+    def ctx_as_of(self, poller, at):
+        s = poller.view(at)["sessions"][0]
+        return s["ctx_as_of"], s["ctx_as_of_exact"]
+
+    def used(self, tokens, **overrides):
+        meta = dict(raw_session()["external_metadata"])
+        meta["context_usage"] = {"max_tokens": 1000000, "used_tokens": tokens}
+        return {"data": [raw_session(external_metadata=meta, **overrides)]}
+
+    def test_the_context_figure_is_dated_by_when_a_poll_first_saw_it(self):
+        api = FakeApi([self.used(100), self.used(100), self.used(200)])
+        poller = self.make(api)
+        poller.poll_once()
+        # Seen on the first poll: it may be older than that, and says so.
+        self.assertEqual(self.ctx_as_of(poller, NOW), (NOW, False))
+        self.now = NOW + POLL_SECS
+        poller.poll_once()
+        self.assertEqual(self.ctx_as_of(poller, self.now), (NOW, False))
+        self.now = NOW + 2 * POLL_SECS
+        poller.poll_once()
+        self.assertEqual(self.ctx_as_of(poller, self.now), (self.now, True))
+
+    def test_a_session_started_since_the_last_poll_is_dated_exactly(self):
+        api = FakeApi([{"data": []}, self.used(100, created_at=iso(NOW + 30))])
+        poller = self.make(api)
+        poller.poll_once()
+        self.now = NOW + POLL_SECS
+        poller.poll_once()
+        self.assertEqual(self.ctx_as_of(poller, self.now), (self.now, True))
+
+    def test_a_change_seen_after_a_gap_in_polling_is_not_dated_exactly(self):
+        api = FakeApi([self.used(100), self.used(200)])
+        poller = self.make(api)
+        poller.poll_once()
+        self.now = NOW + 3 * POLL_SECS
+        poller.poll_once()
+        self.assertEqual(self.ctx_as_of(poller, self.now), (self.now, False))
+
+    def test_no_figure_has_no_date(self):
+        meta = dict(raw_session()["external_metadata"])
+        del meta["context_usage"]
+        poller = self.make(FakeApi([{"data": [raw_session(external_metadata=meta)]}]))
+        poller.poll_once()
+        self.assertEqual(self.ctx_as_of(poller, NOW), (None, False))
+
     def test_an_unexpected_exception_is_contained(self):
         def boom(url, headers):
             raise TypeError("surprise")

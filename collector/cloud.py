@@ -338,6 +338,7 @@ class CloudPoller:
         self.detail = None
         self.failures = 0
         self._archived = set()   # routine sessions seen archived; poll thread only
+        self._ctx_seen = {}      # id -> (used_tokens, as_of, exact); poll thread only
 
     def poll_once(self):
         """One poll. Returns the seconds to wait before the next."""
@@ -364,6 +365,7 @@ class CloudPoller:
         with self._lock:
             self.state, self.detail = state, detail
             if state == "ok":
+                sessions = self._date_context(sessions, now)
                 self.sessions, self.as_of, self.failures = sessions, now, 0
                 return POLL_SECS
             if state == "error":
@@ -372,6 +374,36 @@ class CloudPoller:
             # A login problem is not the API failing, and backing off from it
             # would only delay noticing that Claude Code has refreshed it.
             return POLL_SECS
+
+    def _date_context(self, sessions, now):
+        """Each session's context figure, dated by the poll that first saw it.
+
+        The API's context_usage carries no time of its own, and it lags: on
+        2026-09-30 a session's figure held for 20+ minutes after a /clear
+        while last_event_at kept advancing. Undated, that figure reads as
+        current. A poll that sees a new value knows it appeared within the
+        last poll interval, so it is dated exactly. A value seen for the
+        first time, or after a gap in polling, may be older than the poll
+        that found it, and is marked so the page says "or earlier".
+        """
+        previous = self.as_of
+        steady = previous is not None and now - previous <= 2 * POLL_SECS
+        seen, dated = {}, []
+        for s in sessions:
+            used = s["ctx_used_tokens"]
+            before = self._ctx_seen.get(s["id"])
+            if used is None:
+                as_of, exact = None, False
+            elif before is not None and before[0] == used:
+                as_of, exact = before[1], before[2]
+            else:
+                created = s["created_at"]
+                new_session = before is None and created is not None and previous is not None and created > previous
+                as_of, exact = now, steady and (before is not None or new_session)
+            seen[s["id"]] = (used, as_of, exact)
+            dated.append(dict(s, ctx_as_of=as_of, ctx_as_of_exact=exact))
+        self._ctx_seen = seen
+        return dated
 
     def view(self, now):
         with self._lock:

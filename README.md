@@ -94,7 +94,9 @@ open.
 - Reporters send it as `Authorization: Bearer`. `/ingest` accepts nothing else,
   so a web page the phone visits can't post sessions.
 - The phone opens `/?t=<token>` once and gets a year-long `HttpOnly`,
-  `SameSite=Strict` cookie. Rotating the token withdraws access.
+  `SameSite=Strict` cookie, derived from the token rather than holding it.
+  Rotating the token withdraws access. The link stays in the browser's
+  history, so treat it like the token itself.
 - On any address beyond loopback and Tailscale, the token crosses the network
   on every tick and every page poll, so use HTTPS there: `--tls-cert` and
   `--tls-key`, or a proxy in front with `--behind-tls-proxy`. Without either,

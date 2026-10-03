@@ -248,9 +248,13 @@ class SessionStore:
         self._lock = threading.Lock()
 
     def ingest(self, envelope, now):
-        """Record one status-line tick. Raises ValueError if unusable."""
+        """Record one status-line tick. Raises ValueError if unusable.
+
+        Returns True when the tick's host was not in the store before, so
+        the server can log a machine it has not heard from.
+        """
         with self._lock:
-            self._ingest_locked(envelope, now)
+            return self._ingest_locked(envelope, now)
 
     def _ingest_locked(self, envelope, now):
         if not isinstance(envelope, dict):
@@ -436,6 +440,7 @@ class SessionStore:
             "last_seen": now,
             "where": where or (previous["where"] if previous else None),
         }
+        return previous is None
 
     def _make_room(self, host, now):
         """Before a new session is added: prune, then evict down to the caps.

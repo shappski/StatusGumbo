@@ -21,6 +21,7 @@ running its own OAuth refresh and racing Claude Code for the same file.
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -119,11 +120,24 @@ def read_login(now, creds=None, account=None):
     return token, org
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    # urllib re-sends every header, Authorization included, to wherever a
+    # redirect points. The API never redirects, so one is answered as the
+    # status it is rather than followed with the login attached.
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+# What a session id must look like before it goes into a claude.ai link.
+SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+
+
 def http_get(url, headers, timeout=15):
     """(status, body bytes). Non-2xx is a status, not an exception."""
     request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _OPENER.open(request, timeout=timeout) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as err:
         return err.code, err.read()
@@ -144,7 +158,7 @@ def parse_session(raw):
     if raw.get("environment_kind") != CLOUD_KIND or raw.get("status") == "archived":
         return None
     session_id = raw.get("id")
-    if not isinstance(session_id, str) or not session_id:
+    if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
         return None
     meta = raw.get("external_metadata")
     meta = meta if isinstance(meta, dict) else {}
@@ -154,6 +168,10 @@ def parse_session(raw):
     used = used if _is_number(used) else None
     size = size if _is_number(size) and size > 0 else None
     ctx_pct = used * 100.0 / size if used is not None and size is not None else None
+    # Finite inputs can still overflow here, and an infinity would reach the
+    # page as a bare Infinity it cannot parse.
+    if not _is_number(ctx_pct):
+        ctx_pct = None
 
     repo_url = None
     sources = _dig(raw, "config", "sources")
@@ -196,7 +214,7 @@ def parse_session(raw):
         "ctx_window_size": size,
         "created_at": _epoch(raw.get("created_at")),
         "last_event_at": _epoch(raw.get("last_event_at")) or _epoch(raw.get("updated_at")),
-        "url": "https://claude.ai/code/" + urllib.parse.quote(session_id, safe="_-"),
+        "url": "https://claude.ai/code/" + session_id,
     }
 
 
@@ -337,8 +355,10 @@ class CloudPoller:
             # Deliberately broad, for the reason /ingest is: the schema is
             # somebody else's and undocumented. A surprise costs this section
             # an error line, never the collector.
+            # The page gets fixed text; the exception's own words, which can
+            # carry whatever the response held, go only to the journal.
             traceback.print_exc(file=sys.stderr)
-            sessions, state, detail = None, "error", str(err) or type(err).__name__
+            sessions, state, detail = None, "error", "unexpected response (see the collector's log)"
         else:
             detail = None if state == "ok" else EXPIRED_TEXT
         with self._lock:

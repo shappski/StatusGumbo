@@ -1,4 +1,6 @@
+import base64
 import contextlib
+import hashlib
 import http.client
 import io
 import json
@@ -22,7 +24,9 @@ from collector.server import (
     INDEX_PATH,
     MAX_BODY_BYTES,
     STAMP_PLACEHOLDER,
+    AUTH_FAILURES_PER_MIN,
     _classify_tunnel,
+    cookie_value,
     allowed_host_names,
     host_allowed,
     load_token,
@@ -592,7 +596,9 @@ class TestTokenAuth(ServerTestCase):
         self.assertEqual(status, 303)
         self.assertEqual(headers.get("Location"), "/")
         cookie = headers.get("Set-Cookie", "")
-        self.assertIn("statusgumbo_token=" + TOKEN, cookie)
+        # The cookie holds a value derived from the token, never the token.
+        self.assertIn("statusgumbo_token=" + cookie_value(TOKEN), cookie)
+        self.assertNotIn(TOKEN, cookie)
         self.assertIn("HttpOnly", cookie)
         self.assertIn("SameSite=Strict", cookie)
         self.assertIn("Max-Age=", cookie)
@@ -603,11 +609,51 @@ class TestTokenAuth(ServerTestCase):
         self.assertIsNone(headers.get("Set-Cookie"))
 
     def test_the_cookie_opens_the_page_and_the_api(self):
-        cookie = {"Cookie": "other=1; statusgumbo_token=" + TOKEN}
+        cookie = {"Cookie": "other=1; statusgumbo_token=" + cookie_value(TOKEN)}
         status, _, body = self.request("/", headers=cookie)
         self.assertEqual(status, 200)
         self.assertIn(b"StatusGumbo", body)
         self.assertEqual(self.request("/api/sessions", headers=cookie)[0], 200)
+
+    def test_the_raw_token_is_no_longer_a_cookie(self):
+        cookie = {"Cookie": "statusgumbo_token=" + TOKEN}
+        self.assertEqual(self.request("/api/sessions", headers=cookie)[0], 401)
+
+    def test_the_cookie_value_is_no_bearer(self):
+        # A cookie lifted from a browser can open the page, never post.
+        status, _, _ = self.request("/ingest", "POST", self.ENVELOPE,
+                                    self.bearer(cookie_value(TOKEN)))
+        self.assertEqual(status, 401)
+
+    def test_a_guesser_is_throttled(self):
+        for _ in range(AUTH_FAILURES_PER_MIN):
+            self.request("/api/sessions", headers=self.bearer("wrong-token-wrong-token"))
+        self.assertEqual(
+            self.request("/api/sessions", headers=self.bearer("wrong-token-wrong-token"))[0], 429
+        )
+        # Throttled means throttled: even the right token waits out the minute.
+        self.assertEqual(self.request("/api/sessions", headers=self.bearer())[0], 429)
+
+    def test_the_page_carries_a_csp_that_allows_its_own_script(self):
+        status, headers, body = self.request("/", headers=self.bearer())
+        csp = headers.get("Content-Security-Policy", "")
+        self.assertIn("frame-ancestors 'none'", csp)
+        script = re.search(rb"<script>(.*?)</script>", body, re.S).group(1)
+        digest = base64.b64encode(hashlib.sha256(script).digest()).decode()
+        self.assertIn("'sha256-%s'" % digest, csp)
+        self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff")
+
+    def test_json_nested_too_deep_is_a_plain_400(self):
+        body = b'{"host":"h","payload":' + b"[" * 100000 + b"]" * 100000 + b"}"
+        request = urllib.request.Request(
+            self.url("/ingest"), data=body, method="POST",
+            headers={"Content-Type": "application/json", "Authorization": "Bearer " + TOKEN},
+        )
+        with mock.patch("traceback.print_exc") as printed:
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(caught.exception.code, 400)
+        printed.assert_not_called()
 
     def test_a_wrong_cookie_is_refused(self):
         cookie = {"Cookie": "statusgumbo_token=wrong-token-wrong-token"}

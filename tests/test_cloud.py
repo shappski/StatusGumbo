@@ -398,3 +398,60 @@ class TestPoller(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUntrustedApiValues(unittest.TestCase):
+    """The API is not an attacker, but it is somebody else's undocumented
+    schema, and what it says goes into an href and onto the page."""
+
+    def test_an_id_that_is_not_a_plain_token_is_not_linked(self):
+        for bad in ("..", "cse_01/../x", "cse 01", "", "a" * 200):
+            with self.subTest(id=bad):
+                self.assertIsNone(parse_session(raw_session(id=bad)))
+
+    def test_context_that_overflows_is_dropped(self):
+        raw = raw_session()
+        raw["external_metadata"]["context_usage"] = {"max_tokens": 1e-300, "used_tokens": 1e300}
+        self.assertIsNone(parse_session(raw)["ctx_pct"])
+
+    def test_an_unexpected_failure_shows_fixed_text(self):
+        def api(url, headers):
+            raise RuntimeError("<b>whatever the response held</b>")
+        poller = CloudPoller(clock=lambda: NOW, get=api, login=lambda now: ("tok", "org"))
+        with unittest.mock.patch("traceback.print_exc"):
+            poller.poll_once()
+        detail = poller.view(NOW)["detail"]
+        self.assertNotIn("whatever", detail)
+
+    def test_a_redirect_is_not_followed_with_the_login(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from collector.cloud import http_get
+
+        seen = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append((self.path, self.headers.get("Authorization")))
+                if self.path == "/start":
+                    self.send_response(302)
+                    self.send_header("Location", "/elsewhere")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Length", "2")
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        status, _ = http_get("http://127.0.0.1:%d/start" % server.server_address[1],
+                             {"Authorization": "Bearer secret"}, timeout=5)
+        self.assertEqual(status, 302)
+        self.assertEqual([p for p, _ in seen], ["/start"])

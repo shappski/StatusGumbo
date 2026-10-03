@@ -9,6 +9,8 @@ is set (plan_binds).
 """
 
 import argparse
+import base64
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -41,6 +43,12 @@ COOKIE_MAX_AGE = 365 * 24 * 3600
 # Long enough not to be guessed over HTTP, and restricted to characters that
 # survive a cookie and a URL without quoting.
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._~-]{16,}$")
+# About 128 bits if the characters are random: shorter is accepted, with a
+# warning, since the token is the only thing between the network and the page.
+TOKEN_WARN_BELOW = 22
+# Failed sign-ins one client may make in a minute before it gets 429s.
+AUTH_FAILURES_PER_MIN = 20
+SCRIPT_RE = re.compile(rb"<script>(.*?)</script>", re.S)
 # Spelled out rather than taken from strftime("%b"), which follows the
 # process locale. The page's tick() rewrites this stamp in the same shape
 # with a fixed list of its own, and the two must not disagree on first poll.
@@ -257,6 +265,16 @@ def load_token(environ, path):
         raise ValueError(
             "token must be at least 16 characters of A-Z a-z 0-9 . _ ~ -"
         )
+    if path:
+        try:
+            if os.stat(path).st_mode & 0o077:
+                print("warning: %s is readable by other users; chmod 600 it" % path,
+                      file=sys.stderr)
+        except OSError:
+            pass
+    if len(token) < TOKEN_WARN_BELOW:
+        print("warning: the token is %d characters; use at least %d random ones"
+              % (len(token), TOKEN_WARN_BELOW), file=sys.stderr)
     return token
 
 
@@ -341,14 +359,56 @@ class _Ipv6Server(_Server):
     address_family = socket.AF_INET6
 
 
+def cookie_value(token):
+    """What the page's cookie holds: derived from the token, never the token.
+
+    The cookie lives in a browser for a year. Holding a derived value, it
+    can open the page but never post a tick, which needs the token itself.
+    """
+    return hmac.new(token.encode(), b"statusgumbo page cookie", hashlib.sha256).hexdigest()
+
+
+def content_security_policy(body):
+    """A CSP for the page that allows exactly its own inline script."""
+    hashes = " ".join(
+        "'sha256-%s'" % base64.b64encode(hashlib.sha256(script).digest()).decode()
+        for script in SCRIPT_RE.findall(body)
+    )
+    # Styles must allow inline: the cards' bars are style attributes.
+    return ("default-src 'none'; script-src %s; style-src 'unsafe-inline'; "
+            "connect-src 'self'; img-src 'self' data:; base-uri 'none'; "
+            "form-action 'none'; frame-ancestors 'none'" % (hashes or "'none'"))
+
+
 def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
                 cloud=None, token=None, allowed_hosts=None, tls=None):
-    def matches(candidate):
+    def matches(candidate, secret=token):
         # Constant-time, so response timing does not leak how much of a guess
         # was right.
         return candidate is not None and hmac.compare_digest(
-            candidate.encode(), token.encode()
+            candidate.encode(), secret.encode()
         )
+
+    cookie = cookie_value(token) if token is not None else None
+
+    # Per client address: failed sign-ins this minute, and when each kind of
+    # refusal was last logged. Bounded by clearing; losing the counts only
+    # forgives a guesser for a minute.
+    failures = {}
+    logged = {}
+    guard = threading.Lock()
+
+    def note(kind, client, detail=""):
+        # One journal line per kind of refusal per client per minute: enough
+        # to notice a guesser or a forged host, not enough to fill the disk.
+        now = time.monotonic()
+        with guard:
+            if len(logged) > 1024:
+                logged.clear()
+            if now - logged.get((kind, client), -60) < 60:
+                return
+            logged[(kind, client)] = now
+        print("%s from %s%s" % (kind, client, detail), file=sys.stderr)
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -384,6 +444,8 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
             if code != 204:
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(body)))
+            # Every response is exactly the type it says.
+            self.send_header("X-Content-Type-Options", "nosniff")
             for name, value in headers:
                 self.send_header(name, value)
             self.end_headers()
@@ -403,7 +465,31 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
             morsel = cookie.get(COOKIE_NAME)
             return morsel.value if morsel else None
 
+        def _client(self):
+            return self.client_address[0] if self.client_address else "?"
+
+        def _throttled(self):
+            """True, having answered 429, if this client has failed too often."""
+            now = time.monotonic()
+            with guard:
+                start, count = failures.get(self._client(), (now, 0))
+            if now - start < 60 and count >= AUTH_FAILURES_PER_MIN:
+                note("429 too many failed sign-ins", self._client())
+                self._respond(429, b"too many failed attempts; wait a minute",
+                              headers=[("Retry-After", "60")])
+                return True
+            return False
+
         def _refuse(self):
+            now = time.monotonic()
+            with guard:
+                if len(failures) > 1024:
+                    failures.clear()
+                start, count = failures.get(self._client(), (now, 0))
+                if now - start >= 60:
+                    start, count = now, 0
+                failures[self._client()] = (start, count + 1)
+            note("401 wrong or missing token", self._client())
             self._respond(
                 401,
                 b"unauthorized: open this page once as /?t=<token>",
@@ -416,6 +502,7 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
             # name), so it can read and write nothing.
             if allowed_hosts is None or host_allowed(self.headers.get("Host"), allowed_hosts):
                 return False
+            note("421 unknown Host", self._client(), ": %r" % self.headers.get("Host"))
             self._respond(421, b"misdirected request: unknown Host")
             return True
 
@@ -432,12 +519,15 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
             # preflight. The page itself never posts.
             site = self.headers.get("Sec-Fetch-Site")
             if self.headers.get("Origin") is not None or site not in (None, "none"):
+                note("403 browser post", self._client(), ": Origin %r" % self.headers.get("Origin"))
                 self._respond(403, b"forbidden: browsers may not post here")
                 return
             # Reporters authenticate with the header only. A cookie here would
             # let any page the phone happens to visit post sessions.
             # Checked before the body is read; the 401 closes the connection,
             # so the unread body cannot desynchronise it.
+            if token is not None and self._throttled():
+                return
             if token is not None and not matches(self._bearer()):
                 self._refuse()
                 return
@@ -446,6 +536,7 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
             # answers, so it is a second lock on the same door.
             content_type = (self.headers.get("Content-Type") or "").split(";")[0]
             if content_type.strip().lower() != "application/json":
+                note("415 not JSON", self._client())
                 self._respond(415, b"unsupported media type: send application/json")
                 return
             try:
@@ -459,8 +550,10 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
             raw = self.rfile.read(length)
             try:
                 envelope = json.loads(raw, parse_constant=_refuse_constant)
-                store.ingest(envelope, clock())
-            except (ValueError, UnicodeDecodeError):
+                new_host = store.ingest(envelope, clock())
+            except (ValueError, UnicodeDecodeError, RecursionError):
+                # RecursionError is JSON nested too deep to parse: malformed,
+                # not a surprise worth a traceback.
                 # Malformed input is dropped without disturbing state.
                 self._respond(400, b"bad request")
                 return
@@ -478,6 +571,11 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
                 traceback.print_exc(file=sys.stderr)
                 self._respond(400, b"bad request")
                 return
+            if new_host:
+                # repr: the name came off the wire, and a newline in it must
+                # not forge a second journal line.
+                print("new host %r from %s" % (envelope.get("host"), self._client()),
+                      file=sys.stderr)
             self._respond(204)
 
         def do_GET(self):
@@ -491,6 +589,8 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
             if self._host_refused():
                 return
             if token is not None and path in ("/", "/api/sessions"):
+                if self._throttled():
+                    return
                 offered = urllib.parse.parse_qs(url.query).get("t", [None])[0]
                 if path == "/" and offered is not None:
                     if not matches(offered):
@@ -503,11 +603,11 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
                     self._respond(303, b"", headers=[
                         ("Location", "/"),
                         ("Set-Cookie", "%s=%s; Path=/; Max-Age=%d; HttpOnly; "
-                         "SameSite=Strict%s" % (COOKIE_NAME, token, COOKIE_MAX_AGE,
+                         "SameSite=Strict%s" % (COOKIE_NAME, cookie, COOKIE_MAX_AGE,
                                                 "; Secure" if tls else "")),
                     ])
                     return
-                if not (matches(self._bearer()) or matches(self._cookie())):
+                if not (matches(self._bearer()) or matches(self._cookie(), cookie)):
                     self._refuse()
                     return
             if path == "/api/sessions":
@@ -553,7 +653,9 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
                 # without it.
                 self._respond(
                     200, body, "text/html; charset=utf-8",
-                    headers=[("Cache-Control", "no-store")],
+                    headers=[("Cache-Control", "no-store"),
+                             ("Content-Security-Policy", content_security_policy(body)),
+                             ("Referrer-Policy", "no-referrer")],
                 )
                 return
             self._respond(404, b"not found")

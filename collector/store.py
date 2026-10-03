@@ -230,6 +230,20 @@ class SessionStore:
         raw_ctx_pct = _dig(payload, "context_window", "used_percentage")
         ctx_pct = raw_ctx_pct if _is_number(raw_ctx_pct) else None
 
+        # When the session began, for newest-first ordering. The payload has
+        # no start time, but cost.total_duration_ms is wall-clock time since
+        # the session started (measured 2026-10-03: tick time minus it gave
+        # the same second ten idle minutes apart, and each session after a
+        # /clear started where the previous one's last tick ended). Unlike
+        # first_seen it survives a collector restart, which would otherwise
+        # stamp every session with the same moment.
+        raw_duration = _dig(payload, "cost", "total_duration_ms")
+        started_at = (
+            now - raw_duration / 1000
+            if _is_number(raw_duration) and raw_duration >= 0
+            else None
+        )
+
         # _dig guarantees the *intermediate* nodes are dicts. It guarantees
         # nothing about the leaf, and os.path.basename raises TypeError on
         # any truthy non-string — so the isinstance check is the guard here,
@@ -286,9 +300,18 @@ class SessionStore:
         if record is None:
             # first_seen and history belong to the session, not the tick, so
             # they are set once here and never carried in `fields`.
-            record = {"first_seen": now, "history": deque(maxlen=HISTORY_SLOTS)}
+            record = {
+                "first_seen": now,
+                "started_at": None,
+                "history": deque(maxlen=HISTORY_SLOTS),
+            }
             self.sessions[key] = record
         record.update(fields)
+        # Kept from the first tick that carries it, not recomputed: each
+        # tick's figure jitters by network latency, and two sessions started
+        # within a second of each other must not swap places on a refresh.
+        if record["started_at"] is None:
+            record["started_at"] = started_at
 
         if ctx_pct is not None:
             history = record["history"]
@@ -380,9 +403,10 @@ class SessionStore:
             item["age_secs"] = age
             item["history"] = list(record["history"])
             sessions.append(item)
-        # Grouped by host, alphabetical within the host. The page draws one
-        # heading per host and takes that host's sessions in the order they
-        # appear here, so this is where the within-group ordering is decided.
+        # Grouped by host, newest session first within the host. The page
+        # draws one heading per host and takes that host's sessions in the
+        # order they appear here, so this is where the within-group ordering
+        # is decided.
         #
         # This replaces a -ctx_pct ordering, and losing it is the point. That
         # key put the busiest session on top, but it also moved every card
@@ -391,19 +415,25 @@ class SessionStore:
         # thumb, and two cards could swap places between one 5s refresh and
         # the next. Position is what makes a card findable a second time, so
         # the order has to come from things that do not change while you are
-        # looking: host, then project.
+        # looking: host, then when the session started. A new session lands
+        # on top and pushes the rest down one; nothing else moves a card.
+        # (Alphabetical by project came between the two, and was replaced at
+        # the user's request on 2026-10-03: the session just started is the
+        # one most often looked for.)
         #
-        # session_id breaks the remaining tie so the order is total. Two
-        # sessions in one directory on one host are otherwise equal here, and
-        # without it their relative order would be whatever dict iteration
-        # last happened to give — stable in practice, guaranteed by nothing.
+        # A session with no started_at (an older Claude Code, or a payload
+        # without cost) falls back to first_seen, which is also fixed for the
+        # life of the record. session_id breaks the remaining tie so the
+        # order is total; without it, equal keys would come out in whatever
+        # order dict iteration last gave — stable in practice, guaranteed by
+        # nothing.
         #
-        # casefold() rather than lower(): this sorts hostnames and directory
-        # names, which are not all ASCII.
+        # casefold() rather than lower(): hostnames are not all ASCII.
         sessions.sort(
             key=lambda s: (
                 s["host"].casefold(),
-                (s["project"] or "").casefold(),
+                -(s["started_at"] if s["started_at"] is not None
+                  else s["first_seen"]),
                 s["session_id"],
             )
         )

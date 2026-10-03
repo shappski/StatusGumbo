@@ -294,7 +294,10 @@ def fetch_sessions(token, org, now, get=http_get, archived=None):
         return None, "login_expired"
     # Position must not move while the page is read, so the order comes from
     # when a session was created, which never changes — not from its activity.
-    sessions.sort(key=lambda s: (s["created_at"] or 0, s["id"]))
+    # Newest first, like the local hosts; one with no creation time goes last.
+    sessions.sort(key=lambda s: (
+        s["created_at"] is None, -(s["created_at"] or 0), s["id"],
+    ))
     return sessions, "ok"
 
 

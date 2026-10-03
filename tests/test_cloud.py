@@ -144,8 +144,16 @@ class TestFetchSessions(unittest.TestCase):
         sessions, _ = fetch_sessions("tok", "org", NOW, api)
         self.assertEqual(len(api.urls), 2)
         self.assertIn("cursor=c1", api.urls[1])
-        # Order is by creation, so the old one comes first.
-        self.assertEqual([s["id"] for s in sessions], ["z", "a"])
+        # Newest first by creation, so the old one comes last.
+        self.assertEqual([s["id"] for s in sessions], ["a", "z"])
+
+    def test_a_session_without_a_creation_time_goes_last(self):
+        undated = raw_session(id="undated", created_at=None)
+        older = raw_session(id="older", created_at=iso(NOW - 7200))
+        newer = raw_session(id="newer", created_at=iso(NOW - 60))
+        api = FakeApi([{"data": [undated, older, newer], "next_cursor": None}])
+        sessions, _ = fetch_sessions("tok", "org", NOW, api)
+        self.assertEqual([s["id"] for s in sessions], ["newer", "older", "undated"])
 
     def test_401_is_a_login_problem(self):
         self.assertEqual(fetch_sessions("t", "o", NOW, FakeApi([], status=401)),
@@ -211,7 +219,7 @@ class TestRoutineSessions(unittest.TestCase):
         )
         sessions, state = fetch_sessions("tok", "org", NOW, api)
         self.assertEqual(state, "ok")
-        self.assertEqual([s["id"] for s in sessions], ["cse_01abc", "cse_routine"])
+        self.assertEqual([s["id"] for s in sessions], ["cse_routine", "cse_01abc"])
 
     def test_the_trigger_list_is_asked_for_with_its_beta_header(self):
         api = RoutineApi(triggers=[])

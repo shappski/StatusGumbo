@@ -36,7 +36,7 @@ Claude Code
 
 `branch` comes from the reporter running `git rev-parse` in the payload's `workspace.current_dir`, because the payload has no branch and the collector cannot run git on a remote machine. Rate limits are stored once, not per session, because they belong to the account: storing them per session would let two hosts disagree on screen. A payload carries the snapshot its session last received, so an idle session keeps re-sending an old one. The store therefore orders snapshots by `(resets_at, used_percentage)` and ignores one that is older than what it holds, so an idle session can't drag the page back to yesterday's window.
 
-Cards are ordered by host, then project, then `session_id`, never by context use. A card must stay where it was between 5-second refreshes, or it slides out from under a thumb.
+Cards are ordered by host, then newest session first, then `session_id`, never by context use. A card must stay where it was between 5-second refreshes, or it slides out from under a thumb, so the key is when the session started, which never changes; a new session pushes the others down one. The payload has no start time, but `cost.total_duration_ms` is wall-clock time since the session began, so the store takes the tick time minus that from the first tick that carries it. Unlike the collector's own first sighting, that survives a collector restart. A payload without it falls back to the first sighting.
 
 ## Why a status-line hook, not a fork
 
@@ -126,7 +126,7 @@ Behaviour that follows from building on an undocumented API:
 - The login files are read, never written. An expired token shows `login expired`, and any local `claude` session refreshes it. The collector doesn't run its own OAuth refresh and race Claude Code for the file.
 - One list call a minute (`POLL_SECS`), doubling after failures up to 10 minutes. At most 3 pages, stopping at sessions quiet for 14 days.
 - Sessions started by a routine (a scheduled or one-off trigger) are missing from that list. They're found from `GET /v1/code/triggers` (needs the `anthropic-beta: ccr-triggers-2026-01-30` header), whose entries name their `last_run.session_id`, then `GET /v1/code/sessions?trigger_id=…`. Only triggers that fired in the last 14 days are looked up, and a session once seen archived is never asked for again while the collector runs. If the trigger list fails, the whole poll fails, so routine cards never vanish without an error line. A recurring routine shows only its latest run.
-- Cloud cards are ordered by creation time, which never changes.
+- Cloud cards are ordered newest first by creation time, which never changes.
 
 ## Tunnel (optional)
 

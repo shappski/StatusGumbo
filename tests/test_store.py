@@ -638,24 +638,29 @@ class TestConcurrency(unittest.TestCase):
 
 
 class TestOrdering(unittest.TestCase):
-    """Ordered by host, then project, then session_id.
+    """Ordered by host, then newest session first, then session_id.
 
     This replaced a -ctx_pct ordering. The old key put the busiest session
     first, but every card moved whenever any session's context changed, which
     on a phone refreshing every 5s is continuous: a card slid out from under
     your thumb, and two could swap places between one refresh and the next.
     Position is what makes a card findable a second time, so the key is built
-    from things that do not change while you are looking at them.
+    from things that do not change while you are looking at them. When a
+    session started is one of those; alphabetical by project, the key in
+    between, gave way to it on 2026-10-03.
     """
 
     def _order(self, store, now=1000):
         return [s["session_id"] for s in store.snapshot(now)["sessions"]]
 
-    def _session(self, session_id, host="host-a", current_dir="/home/u/proj"):
+    def _session(self, session_id, host="host-a", current_dir="/home/u/proj",
+                 duration_ms=None):
         env = envelope()
         env["host"] = host
         env["payload"]["session_id"] = session_id
         env["payload"]["workspace"]["current_dir"] = current_dir
+        if duration_ms is not None:
+            env["payload"]["cost"]["total_duration_ms"] = duration_ms
         return env
 
     def test_sessions_group_by_host(self):
@@ -672,13 +677,52 @@ class TestOrdering(unittest.TestCase):
         self.assertEqual(order.index("b1") + 1, order.index("b2"))
         self.assertLess(order.index("a2"), order.index("b1"))
 
-    def test_projects_are_alphabetical_within_a_host(self):
+    def test_newest_session_first_within_a_host(self):
+        # All three tick at the same moment, so only the payload's duration
+        # can say which began last. Project names are chosen so that
+        # alphabetical order would give the opposite answer.
         store = SessionStore()
-        for name in ("zeta", "alpha", "mid"):
-            store.ingest(
-                self._session(name, current_dir="/home/u/" + name), 1000
-            )
-        self.assertEqual(self._order(store), ["alpha", "mid", "zeta"])
+        store.ingest(self._session("old", current_dir="/home/u/a",
+                                   duration_ms=3_600_000), 1000)
+        store.ingest(self._session("new", current_dir="/home/u/z",
+                                   duration_ms=60_000), 1000)
+        store.ingest(self._session("mid", current_dir="/home/u/m",
+                                   duration_ms=600_000), 1000)
+        self.assertEqual(self._order(store), ["new", "mid", "old"])
+
+    def test_start_time_comes_from_the_payload_not_arrival(self):
+        # A collector restart sees every running session in its first tick.
+        # Ordering by arrival would rank them by who happened to tick first.
+        store = SessionStore()
+        store.ingest(self._session("long-running", duration_ms=7_200_000), 1000)
+        store.ingest(self._session("just-started", duration_ms=5_000), 1003)
+        store.ingest(self._session("long-running", duration_ms=7_210_000), 1010)
+        self.assertEqual(self._order(store, 1010), ["just-started", "long-running"])
+
+    def test_without_a_duration_arrival_order_stands_in(self):
+        store = SessionStore()
+        store.ingest(self._session("earlier"), 1000)
+        store.ingest(self._session("later"), 1005)
+        store.ingest(self._session("earlier"), 1010)
+        self.assertEqual(self._order(store, 1010), ["later", "earlier"])
+
+    def test_a_non_numeric_duration_is_ignored(self):
+        store = SessionStore()
+        store.ingest(self._session("earlier", duration_ms="lots"), 1000)
+        store.ingest(self._session("later", duration_ms=True), 1005)
+        self.assertEqual(self._order(store, 1005), ["later", "earlier"])
+
+    def test_start_time_is_fixed_by_the_first_tick(self):
+        # Each tick's computed start jitters with network latency. Two
+        # sessions started half a second apart must not trade places when a
+        # later tick of the older one arrives a second late.
+        store = SessionStore()
+        store.ingest(self._session("older", duration_ms=100_000), 1000)
+        store.ingest(self._session("newer", duration_ms=99_500), 1000)
+        before = self._order(store)
+        self.assertEqual(before, ["newer", "older"])
+        store.ingest(self._session("older", duration_ms=109_000), 1010)
+        self.assertEqual(self._order(store, 1010), before)
 
     def test_context_no_longer_moves_a_card(self):
         # The regression this ordering exists to prevent.
@@ -697,8 +741,9 @@ class TestOrdering(unittest.TestCase):
         self.assertEqual(self._order(store, 1001), before)
 
     def test_missing_project_sorts_without_crashing(self):
-        # project is None when the payload carries no workspace.current_dir,
-        # and None has no ordering against a str.
+        # project is None when the payload carries no workspace.current_dir.
+        # It is no longer part of the sort key, but it was, and None has no
+        # ordering against a str; this keeps that crash from coming back.
         store = SessionStore()
         known = self._session("known", current_dir="/home/u/alpha")
         unknown = self._session("unknown")

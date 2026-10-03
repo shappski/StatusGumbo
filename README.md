@@ -31,11 +31,13 @@ loopback and a Tailscale tailnet requires one.
 
     python3 -c 'import secrets; print(secrets.token_urlsafe(24))'
 
-With Docker:
+With Docker (the image is built from `master` for amd64 and arm64):
 
-    docker build -t statusgumbo .
     docker run -d --name statusgumbo --restart unless-stopped \
-      -p 4747:4747 -e STATUSGUMBO_TOKEN=<token> statusgumbo
+      -p 4747:4747 -e STATUSGUMBO_TOKEN=<token> ghcr.io/shappski/statusgumbo
+
+Or build it yourself from a checkout with `docker build -t statusgumbo .` and
+run `statusgumbo` in its place.
 
 Or directly, from a checkout (Python 3.8+):
 
@@ -112,7 +114,8 @@ open.
 
 ### In Docker
 
-The image holds the collector only. It binds `0.0.0.0`, so it won't start
+The image, `ghcr.io/shappski/statusgumbo`, holds the collector only. Tags are
+`latest` and `sha-<commit>` for each commit on `master`. It binds `0.0.0.0`, so it won't start
 without `STATUSGUMBO_TOKEN`, or a mounted file named by
 `STATUSGUMBO_TOKEN_FILE`. Publish another host port with `-p 8080:4747` rather
 than `--port`, because the health check probes 4747. The image runs with

@@ -1,3 +1,5 @@
+<img src="assets/statusgumbo.svg" alt="" width="64" align="right">
+
 # StatusGumbo
 
 Every Claude Code session you have running, on one page on your phone.

@@ -6,6 +6,8 @@ behind linear burn you are: used% minus elapsed%, where elapsed is derived
 from the reset time and the window length.
 """
 
+import math
+
 FIVE_HOUR_SECS = 5 * 60 * 60
 SEVEN_DAY_SECS = 7 * 24 * 60 * 60
 
@@ -16,8 +18,20 @@ def _is_number(value):
     bool is a subclass of int in Python and is excluded deliberately: True
     would arithmetic as 1% used, inventing a confident figure out of what is
     really a type error.
+
+    It must also be finite. json.loads turns 1e400 into inf, and a 400-digit
+    integer raises OverflowError the moment it meets a float. One such value
+    either blanked the page (json.dumps writes a bare Infinity, which the
+    browser's JSON.parse rejects) or made every snapshot a 500, and a
+    rate_limits window with an infinite resets_at was never superseded, so
+    the usage line stayed withheld until a restart.
     """
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def window_pace(used_percentage, resets_at, window_secs, now):

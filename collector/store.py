@@ -61,6 +61,13 @@ BRIDGE_ID = re.compile(r"cse_[A-Za-z0-9]+")
 PLACE = re.compile(r"[a-z0-9-]{1,24}")
                              # Remote Control's session id as Claude Code
                              # records it; anything else earns no link.
+RESETS_AT_SLACK_SECS = 60 * 60
+                             # How far past now + its own length a window may
+                             # claim to reset. A real window cannot reset later
+                             # than that; the hour covers clock skew between
+                             # the API and this machine. A snapshot claiming
+                             # more is refused whole: nothing later ever ranks
+                             # above it, so one such tick froze the usage line.
 RATE_LIMITS_MAX_AGE_SECS = 15 * 60
                              # Sessions drop at 15 min and hosts at 1 h, but
                              # the budget figure had no expiry at all — and it
@@ -110,6 +117,41 @@ def _supersedes(candidate, stored):
         if new < old:
             return False
     return True
+
+
+class _Implausible(Exception):
+    """A rate_limits snapshot that cannot be a real one."""
+
+
+def _clean_window(window, window_secs, now):
+    """The two figures the page uses from one usage window, checked.
+
+    Returns None for an absent window and raises _Implausible for one that
+    sends a value that is not a finite number, or a reset beyond
+    now + window_secs + RESETS_AT_SLACK_SECS. Refusing the whole snapshot,
+    rather than blanking the bad field, matters: a window with a blank field
+    is skipped by _supersedes, so a half-blank snapshot would replace a good
+    one.
+    """
+    if window is None:
+        return None
+    if not isinstance(window, dict):
+        raise _Implausible()
+    cleaned = {}
+    for name in ("used_percentage", "resets_at"):
+        value = window.get(name)
+        if value is not None and not _is_number(value):
+            raise _Implausible()
+        cleaned[name] = value
+    resets_at = cleaned["resets_at"]
+    if resets_at is not None and resets_at > now + window_secs + RESETS_AT_SLACK_SECS:
+        raise _Implausible()
+    return cleaned
+
+
+def _number(value):
+    """value if it is a finite number, else None."""
+    return value if _is_number(value) else None
 
 
 def _dig(mapping, *path):
@@ -182,8 +224,9 @@ class SessionStore:
         # for callers that do not care -- the tests, mostly.
         self.local_host = local_host
         # What the collector's own machine is, from its own STATUSGUMBO_PLACE.
-        # Used only until that machine's reporter says otherwise, and so
-        # also before it has ever reported. None means unlabelled: the
+        # When set it wins over what any tick says about that machine (see
+        # _place), and it labels the machine before it has ever reported.
+        # None means unlabelled, or whatever that machine's reporter says: the
         # collector's host used to be "laptop" by deployment, which on
         # anyone else's server would be a guess.
         self.local_place = local_place
@@ -287,11 +330,16 @@ class SessionStore:
             "fast_mode": payload.get("fast_mode"),
             "version": payload.get("version"),
             "ctx_pct": ctx_pct,
-            "ctx_used_tokens": _dig(payload, "context_window", "total_input_tokens"),
-            "ctx_window_size": _dig(
-                payload, "context_window", "context_window_size"
+            # Numbers the page does arithmetic on are kept only when finite;
+            # an infinity here would reach json.dumps as a bare Infinity,
+            # which the page cannot parse.
+            "ctx_used_tokens": _number(
+                _dig(payload, "context_window", "total_input_tokens")
             ),
-            "cost_usd": _dig(payload, "cost", "total_cost_usd"),
+            "ctx_window_size": _number(
+                _dig(payload, "context_window", "context_window_size")
+            ),
+            "cost_usd": _number(_dig(payload, "cost", "total_cost_usd")),
             "last_seen": now,
         }
 
@@ -332,13 +380,22 @@ class SessionStore:
             # every 10 seconds indefinitely. The page flickered between a
             # current figure and one whose window had reset the day before,
             # each stamped "as of" now.
-            candidate = {
-                "five_hour": rate_limits.get("five_hour"),
-                "seven_day": rate_limits.get("seven_day"),
-                "source_host": host,
-                "as_of": now,
-            }
-            if _supersedes(candidate, self.rate_limits):
+            try:
+                candidate = {
+                    "five_hour": _clean_window(
+                        rate_limits.get("five_hour"), FIVE_HOUR_SECS, now
+                    ),
+                    "seven_day": _clean_window(
+                        rate_limits.get("seven_day"), SEVEN_DAY_SECS, now
+                    ),
+                    "source_host": host,
+                    "as_of": now,
+                }
+            except _Implausible:
+                # The tick's session is still recorded; only its usage
+                # figures are not believed.
+                candidate = None
+            if candidate is not None and _supersedes(candidate, self.rate_limits):
                 self.rate_limits = candidate
 
         # Facts only. Silence is ambiguous here by nature — a cleanly ended
@@ -487,11 +544,14 @@ class SessionStore:
         # what the host said, else the collector's own place for its own
         # host. Any other host that said nothing is unlabelled -- a remote
         # machine is not assumed to be a VM.
-        if where:
-            return where
-        if host == self.local_host:
+        #
+        # For its own host the collector's own setting wins when it has one.
+        # It reads the same place file as that machine's reporter, so the two
+        # agree, and any client that can post could otherwise relabel the
+        # machine the collector runs on for the life of the process.
+        if host == self.local_host and self.local_place:
             return self.local_place
-        return None
+        return where
 
     def _rate_limits_stale_as_of(self, now):
         # Called with self._lock already held.

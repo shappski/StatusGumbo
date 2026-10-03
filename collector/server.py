@@ -156,6 +156,83 @@ def tailscale_ipv4():
     return lines[0] if lines else None
 
 
+def tailscale_names():
+    """This node's Tailscale machine name and MagicDNS name, or nothing."""
+    try:
+        result = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        own = json.loads(result.stdout).get("Self") or {}
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        return set()
+    return {
+        name for name in (own.get("HostName"), own.get("DNSName"))
+        if isinstance(name, str) and name
+    }
+
+
+def _clean_name(name):
+    return name.strip().rstrip(".").lower()
+
+
+def allowed_host_names(extra=(), tailnet=None):
+    """The names the page and the reporters may use to reach this collector.
+
+    Used only without a token, where the bind is loopback and the tailnet.
+    An IP literal is always accepted (see host_allowed); these are the names:
+    localhost, this machine's hostname and its first label, its Tailscale
+    names, and whatever the operator adds with --allow-host.
+    """
+    names = {"localhost"}
+    try:
+        hostname = socket.gethostname()
+    except OSError:
+        hostname = ""
+    if hostname:
+        names.update((hostname, hostname.split(".")[0]))
+    names.update(tailscale_names() if tailnet is None else tailnet)
+    names.update(extra)
+    return frozenset(_clean_name(name) for name in names if name and name.strip())
+
+
+def host_allowed(header, allowed):
+    """Is a request's Host header one this collector answers to?
+
+    The defence against DNS rebinding. A page on an attacker's domain can
+    have that domain re-resolve to 127.0.0.1 or the tailnet address, and the
+    browser then treats this collector as the attacker's own origin and lets
+    the page read /api/sessions. Its Host header still names the attacker's
+    domain, which is what this checks. An IP literal cannot be rebound, so
+    any is accepted. A request with no Host at all (HTTP/1.0) is not from a
+    browser, and is accepted too.
+    """
+    if header is None:
+        return True
+    text = header.strip()
+    if text.startswith("["):
+        name = text[1:text.find("]")] if "]" in text else text[1:]
+    elif text.count(":") == 1:
+        name = text.split(":")[0]
+    else:
+        name = text
+    name = _clean_name(name)
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        pass
+    return name in allowed
+
+
+def _refuse_constant(name):
+    # json.loads accepts the bare words NaN, Infinity and -Infinity, which no
+    # reporter sends and which the page's JSON.parse could not read back.
+    raise ValueError("non-finite number %s" % name)
+
+
 def load_token(environ, path):
     """The shared token, or None when none is configured.
 
@@ -227,7 +304,7 @@ class _Ipv6Server(ThreadingHTTPServer):
 
 
 def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
-                cloud=None, token=None):
+                cloud=None, token=None, allowed_hosts=None):
     def matches(candidate):
         # Constant-time, so response timing does not leak how much of a guess
         # was right.
@@ -295,9 +372,29 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
                 headers=[("WWW-Authenticate", 'Bearer realm="statusgumbo"')],
             )
 
+        def _host_refused(self):
+            # None means no Host check: with a token, a rebound page has
+            # neither the bearer nor the cookie (which is scoped to the real
+            # name), so it can read and write nothing.
+            if allowed_hosts is None or host_allowed(self.headers.get("Host"), allowed_hosts):
+                return False
+            self._respond(421, b"misdirected request: unknown Host")
+            return True
+
         def do_POST(self):
             if self.path != "/ingest":
                 self._respond(404, b"not found")
+                return
+            if self._host_refused():
+                return
+            # Reporters are curl and send neither header; a browser sends
+            # Origin on every POST. Without this, any page open in a browser
+            # on this machine could post ticks to a collector with no token:
+            # a text/plain body is a "simple" request, sent without a CORS
+            # preflight. The page itself never posts.
+            site = self.headers.get("Sec-Fetch-Site")
+            if self.headers.get("Origin") is not None or site not in (None, "none"):
+                self._respond(403, b"forbidden: browsers may not post here")
                 return
             # Reporters authenticate with the header only. A cookie here would
             # let any page the phone happens to visit post sessions.
@@ -305,6 +402,13 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
             # so the unread body cannot desynchronise it.
             if token is not None and not matches(self._bearer()):
                 self._refuse()
+                return
+            # Every reporter sends JSON as JSON. A browser cannot send this
+            # type cross-site without a preflight, which this server never
+            # answers, so it is a second lock on the same door.
+            content_type = (self.headers.get("Content-Type") or "").split(";")[0]
+            if content_type.strip().lower() != "application/json":
+                self._respond(415, b"unsupported media type: send application/json")
                 return
             try:
                 length = int(self.headers.get("Content-Length") or 0)
@@ -316,7 +420,7 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
                 return
             raw = self.rfile.read(length)
             try:
-                envelope = json.loads(raw)
+                envelope = json.loads(raw, parse_constant=_refuse_constant)
                 store.ingest(envelope, clock())
             except (ValueError, UnicodeDecodeError):
                 # Malformed input is dropped without disturbing state.
@@ -345,6 +449,8 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
             # this says only that the process serves HTTP.
             if path == "/healthz":
                 self._respond(200, b"ok")
+                return
+            if self._host_refused():
                 return
             if token is not None and path in ("/", "/api/sessions"):
                 offered = urllib.parse.parse_qs(url.query).get("t", [None])[0]
@@ -452,6 +558,14 @@ def main(argv=None):
         help="do not poll for cloud sessions (the default)",
     )
     parser.add_argument(
+        "--allow-host", action="append", default=[],
+        help="a name the page or a reporter uses to reach this collector "
+             "(repeatable); also STATUSGUMBO_ALLOW_HOSTS, comma-separated. "
+             "Without a token, requests naming any other host are refused. "
+             "localhost, this machine's hostname, its Tailscale names and "
+             "any IP address are always allowed.",
+    )
+    parser.add_argument(
         "--no-local-host", action="store_true",
         help="do not list this machine on the page; for a collector that "
              "runs somewhere with no reporter of its own, such as a container",
@@ -489,9 +603,18 @@ def main(argv=None):
         cloud = CloudPoller()
         threading.Thread(target=cloud.run_forever, daemon=True).start()
 
+    allowed_hosts = None
+    if token is None:
+        allowed_hosts = allowed_host_names(args.allow_host or [
+            part.strip()
+            for part in os.environ.get("STATUSGUMBO_ALLOW_HOSTS", "").split(",")
+            if part.strip()
+        ])
+
     servers = []
     for address in addresses:
-        server = make_server((address, args.port), store, cloud=cloud, token=token)
+        server = make_server((address, args.port), store, cloud=cloud, token=token,
+                             allowed_hosts=allowed_hosts)
         servers.append(server)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         print("listening on http://%s:%d%s" % (

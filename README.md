@@ -53,13 +53,14 @@ the reporter up when it restarts.
 ## The collector
 
     python3 -m collector.server [--port 4747] [--bind ADDR ...] [--token-file PATH]
-                                [--cloud] [--no-local-host]
+                                [--allow-host NAME ...] [--cloud] [--no-local-host]
 
 | Option | Environment | Meaning |
 |---|---|---|
 | `--port` | | Port to listen on (default 4747). |
 | `--bind ADDR` | `STATUSGUMBO_BIND` (comma-separated) | Addresses to listen on. Default: `127.0.0.1` plus this machine's Tailscale address, if it has one. |
 | `--token-file PATH` | `STATUSGUMBO_TOKEN_FILE`, `STATUSGUMBO_TOKEN` | The shared token. Without one, nothing is required. |
+| `--allow-host NAME` | `STATUSGUMBO_ALLOW_HOSTS` (comma-separated) | Another name you reach the collector by, when it has no token ([below](#token-and-where-it-listens)). |
 | `--cloud` | | Also show this account's cloud sessions ([below](#cloud-sessions)). Off by default. |
 | `--no-local-host` | | Don't list the collector's own machine. The Docker image sets this. |
 | | `STATUSGUMBO_HOST`, `STATUSGUMBO_PLACE` | The collector's own machine's name and place, when it also runs Claude Code. |
@@ -70,6 +71,18 @@ Loopback (`127.0.0.1`, `::1`) and Tailscale addresses (`100.64.0.0/10`,
 `fd7a:115c:a1e0::/48`) need no token. Any other address, `0.0.0.0` and `::`
 included, makes the collector **refuse to start** until a token is set. Only IP
 addresses are accepted, so DNS never decides what gets exposed.
+
+Without a token, the collector answers only to the names it knows itself by:
+`localhost`, this machine's hostname, its Tailscale names, and any IP address.
+A request naming another host gets `421`, which stops a web page from using
+DNS rebinding to read your sessions. If you reach it by some other name, add
+it with `--allow-host`.
+
+In every mode, `/ingest` refuses a request a browser sent (`403` when it
+carries `Origin` or `Sec-Fetch-Site`) and a body not sent as
+`Content-Type: application/json` (`415`). The reporter is curl and does
+neither, so this only stops a web page open on the collector's machine from
+posting ticks to it.
 
 The token is at least 16 characters of `A-Z a-z 0-9 . _ ~ -`. A malformed token,
 or a token file that can't be read, stops the collector rather than leaving it

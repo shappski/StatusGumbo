@@ -23,6 +23,8 @@ from collector.server import (
     MAX_BODY_BYTES,
     STAMP_PLACEHOLDER,
     _classify_tunnel,
+    allowed_host_names,
+    host_allowed,
     load_token,
     plan_binds,
     make_server,
@@ -814,3 +816,141 @@ class TestIpv6Bind(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RawRequests(ServerTestCase):
+    """http.client, so every header -- Host included -- is the test's choice."""
+
+    def raw(self, method, path, body=None, headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            conn.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+            headers = dict(headers or {})
+            headers.setdefault("Host", "127.0.0.1:%d" % self.port)
+            if body is not None:
+                headers.setdefault("Content-Length", str(len(body)))
+            for name, value in headers.items():
+                conn.putheader(name, value)
+            conn.endheaders(body)
+            response = conn.getresponse()
+            return response.status, response.read()
+        finally:
+            conn.close()
+
+    def ingest(self, headers=None, body=None):
+        if body is None:
+            body = json.dumps({"host": "workstation", "payload": PAYLOAD}).encode()
+        return self.raw("POST", "/ingest", body, dict(
+            {"Content-Type": "application/json"}, **(headers or {})
+        ))[0]
+
+
+class TestBrowsersCannotPost(RawRequests):
+    """A collector with no token took a tick from any page open in a browser
+    on the same machine: a text/plain POST is a "simple" request, sent
+    cross-site without a preflight. Reporters are curl, which sends neither
+    Origin nor Sec-Fetch-Site and always sends application/json."""
+
+    def assert_nothing_stored(self):
+        self.assertEqual(self.store.snapshot(1000.0)["sessions"], [])
+
+    def test_a_reporter_still_posts(self):
+        self.assertEqual(self.ingest(), 204)
+
+    def test_a_charset_parameter_is_fine(self):
+        self.assertEqual(
+            self.ingest({"Content-Type": "application/json; charset=utf-8"}), 204
+        )
+
+    def test_a_post_with_an_origin_is_refused(self):
+        for origin in ("https://evil.example", "http://127.0.0.1:%d" % self.port, "null"):
+            with self.subTest(origin=origin):
+                self.assertEqual(self.ingest({"Origin": origin}), 403)
+        self.assert_nothing_stored()
+
+    def test_a_cross_site_fetch_is_refused(self):
+        for site in ("cross-site", "same-site", "same-origin"):
+            with self.subTest(site=site):
+                self.assertEqual(self.ingest({"Sec-Fetch-Site": site}), 403)
+        self.assert_nothing_stored()
+
+    def test_a_body_that_is_not_declared_json_is_refused(self):
+        for content_type in ("text/plain", "application/x-www-form-urlencoded",
+                             "multipart/form-data; boundary=x", None):
+            with self.subTest(content_type=content_type):
+                headers = {} if content_type is None else {"Content-Type": content_type}
+                status, _ = self.raw(
+                    "POST", "/ingest",
+                    json.dumps({"host": "workstation", "payload": PAYLOAD}).encode(),
+                    headers,
+                )
+                self.assertEqual(status, 415)
+        self.assert_nothing_stored()
+
+    def test_bare_nan_and_infinity_are_refused(self):
+        for word in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(word=word):
+                body = json.dumps({"host": "workstation", "payload": PAYLOAD})
+                body = body.replace('"payload": {', '"payload": {"cost": {"total_cost_usd": %s}, ' % word, 1)
+                self.assertEqual(self.ingest(body=body.encode()), 400)
+        self.assert_nothing_stored()
+
+
+class TestUnknownHostIsRefused(RawRequests):
+    """DNS rebinding: a page on an attacker's domain re-resolves it to
+    127.0.0.1, and the browser then lets it read /api/sessions as its own
+    origin. The Host header still names the attacker's domain."""
+
+    SERVER_KWARGS = {"allowed_hosts": frozenset({"localhost", "workstation",
+                                                 "workstation.tail1.ts.net"})}
+
+    def test_a_foreign_name_cannot_read_or_write(self):
+        for host in ("evil.example", "evil.example:4747", "workstation.evil.example"):
+            with self.subTest(host=host):
+                self.assertEqual(self.raw("GET", "/api/sessions", headers={"Host": host})[0], 421)
+                self.assertEqual(self.raw("GET", "/", headers={"Host": host})[0], 421)
+                self.assertEqual(self.ingest({"Host": host}), 421)
+        self.assertEqual(self.store.snapshot(1000.0)["sessions"], [])
+
+    def test_the_names_this_machine_goes_by_are_served(self):
+        for host in ("localhost", "LOCALHOST:4747", "workstation:4747",
+                     "workstation.tail1.ts.net.", "127.0.0.1:4747",
+                     "[::1]:4747", "100.101.102.103", "[fd7a:115c:a1e0::1]"):
+            with self.subTest(host=host):
+                self.assertEqual(self.raw("GET", "/api/sessions", headers={"Host": host})[0], 200)
+
+    def test_healthz_answers_any_name(self):
+        self.assertEqual(self.raw("GET", "/healthz", headers={"Host": "evil.example"})[0], 200)
+
+
+class TestTokenModeDoesNotCheckHost(RawRequests):
+    """With a token the bearer and the host-scoped cookie are the defence, and
+    a container is reached by whatever name its owner gives it."""
+
+    SERVER_KWARGS = {"token": TOKEN}
+
+    def test_any_name_with_the_bearer(self):
+        status, _ = self.raw("GET", "/api/sessions", headers={
+            "Host": "statusgumbo.example", "Authorization": "Bearer " + TOKEN,
+        })
+        self.assertEqual(status, 200)
+
+
+class TestAllowedHostNames(unittest.TestCase):
+    def test_hostname_its_first_label_tailnet_and_extras(self):
+        with mock.patch("socket.gethostname", return_value="Box.Example.com"):
+            names = allowed_host_names(["Phone-Alias."], tailnet={"box", "box.tail1.ts.net."})
+        self.assertEqual(
+            names,
+            {"localhost", "box.example.com", "box", "box.tail1.ts.net", "phone-alias"},
+        )
+
+    def test_host_header_parsing(self):
+        allowed = frozenset({"box"})
+        self.assertTrue(host_allowed(None, allowed))
+        self.assertTrue(host_allowed("box:4747", allowed))
+        self.assertTrue(host_allowed("[::1]", allowed))
+        self.assertTrue(host_allowed("::1", allowed))
+        self.assertFalse(host_allowed("", allowed))
+        self.assertFalse(host_allowed("box.evil.example", allowed))
+        self.assertFalse(host_allowed("[evil]:4747", allowed))

@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 import shutil
 import tempfile
@@ -17,6 +18,7 @@ from collector.store import (
     local_host_name,
     local_place,
 )
+from collector.usage import FIVE_HOUR_SECS
 
 BASE_PAYLOAD = {
     "session_id": "sess-1",
@@ -37,6 +39,12 @@ BASE_PAYLOAD = {
         "seven_day": {"used_percentage": 12, "resets_at": 1_785_400_000},
     },
 }
+
+
+# A real epoch inside BASE_PAYLOAD's windows. Rate limits are only believed
+# when resets_at is within a window's length of now, so a test that wants its
+# usage figures kept must tick at a plausible moment, not at 1000.
+T0 = 1_784_990_000
 
 
 def envelope(host="workstation", branch="master", **overrides):
@@ -104,14 +112,14 @@ class TestRateLimitsTakeTheFreshestSnapshot(unittest.TestCase):
         self.store.ingest(envelope(), now)
         rolled = envelope(host="idle-session")
         rolled["payload"]["rate_limits"] = {
-            "five_hour": {"used_percentage": 3, "resets_at": 1_785_018_000},
+            "five_hour": {"used_percentage": 3, "resets_at": 1_785_008_000},
             "seven_day": {"used_percentage": 12, "resets_at": 1_785_400_000},
         }
         self.store.ingest(rolled, now + 1)
         windows = self.store.snapshot(now + 2)["rate_limits"]["windows"]
         five = next(w for w in windows if w["name"] == "five_hour")
         self.assertEqual(five["used_percentage"], 3)
-        self.assertEqual(five["resets_at"], 1_785_018_000)
+        self.assertEqual(five["resets_at"], 1_785_008_000)
 
     def test_a_window_past_its_own_reset_is_withheld(self):
         # Nothing has reported since the window rolled over, so the stored
@@ -318,9 +326,9 @@ class TestHostFacts(unittest.TestCase):
 class TestRateLimits(unittest.TestCase):
     def test_stored_once_not_per_session(self):
         store = SessionStore()
-        store.ingest(envelope(host="workstation"), 1000)
-        store.ingest(envelope(host="coder-vm"), 1001)
-        rate_limits = store.snapshot(1001)["rate_limits"]
+        store.ingest(envelope(host="workstation"), T0)
+        store.ingest(envelope(host="coder-vm"), T0 + 1)
+        rate_limits = store.snapshot(T0 + 1)["rate_limits"]
         self.assertEqual(rate_limits["source_host"], "coder-vm")
         self.assertEqual(len(rate_limits["windows"]), 2)
 
@@ -336,8 +344,8 @@ class TestRateLimits(unittest.TestCase):
         store = SessionStore()
         env = envelope()
         del env["payload"]["rate_limits"]
-        store.ingest(env, 1000)
-        self.assertIsNone(store.snapshot(1000)["rate_limits"])
+        store.ingest(env, T0)
+        self.assertIsNone(store.snapshot(T0)["rate_limits"])
 
 
 class TestIngestNeverWedgesTheStore(unittest.TestCase):
@@ -403,27 +411,27 @@ class TestRateLimitFreshness(unittest.TestCase):
 
     def test_rate_limits_survive_up_to_the_max_age(self):
         store = SessionStore()
-        store.ingest(envelope(), 1000)
-        fresh = store.snapshot(1000 + RATE_LIMITS_MAX_AGE_SECS)["rate_limits"]
+        store.ingest(envelope(), T0)
+        fresh = store.snapshot(T0 + RATE_LIMITS_MAX_AGE_SECS)["rate_limits"]
         self.assertIsNotNone(fresh)
 
     def test_rate_limits_past_the_max_age_are_withheld(self):
         store = SessionStore()
-        store.ingest(envelope(), 1000)
-        stale = store.snapshot(1000 + RATE_LIMITS_MAX_AGE_SECS + 1)["rate_limits"]
+        store.ingest(envelope(), T0)
+        stale = store.snapshot(T0 + RATE_LIMITS_MAX_AGE_SECS + 1)["rate_limits"]
         self.assertIsNone(stale)
 
     def test_a_fresh_tick_brings_them_back(self):
         store = SessionStore()
-        store.ingest(envelope(), 1000)
-        later = 1000 + RATE_LIMITS_MAX_AGE_SECS + 500
+        store.ingest(envelope(), T0)
+        later = T0 + RATE_LIMITS_MAX_AGE_SECS + 500
         store.ingest(envelope(), later)
         self.assertIsNotNone(store.snapshot(later)["rate_limits"])
 
     def test_a_served_view_reports_nothing_withheld(self):
         store = SessionStore()
-        store.ingest(envelope(), 1000)
-        snap = store.snapshot(1000 + RATE_LIMITS_MAX_AGE_SECS)
+        store.ingest(envelope(), T0)
+        snap = store.snapshot(T0 + RATE_LIMITS_MAX_AGE_SECS)
         self.assertIsNotNone(snap["rate_limits"])
         self.assertIsNone(snap["rate_limits_stale_as_of"])
 
@@ -433,33 +441,33 @@ class TestRateLimitFreshness(unittest.TestCase):
         # "nothing since 12:58" rather than "not reported yet" about an
         # account that reported all morning.
         store = SessionStore()
-        store.ingest(envelope(), 1000)
-        snap = store.snapshot(1000 + RATE_LIMITS_MAX_AGE_SECS + 1)
+        store.ingest(envelope(), T0)
+        snap = store.snapshot(T0 + RATE_LIMITS_MAX_AGE_SECS + 1)
         self.assertIsNone(snap["rate_limits"])
-        self.assertEqual(snap["rate_limits_stale_as_of"], 1000)
+        self.assertEqual(snap["rate_limits_stale_as_of"], T0)
 
     def test_never_reported_is_not_reported_as_withheld(self):
         # The other silence, and the one the old wording was written for.
         store = SessionStore()
         env = envelope()
         del env["payload"]["rate_limits"]
-        store.ingest(env, 1000)
-        snap = store.snapshot(1000)
+        store.ingest(env, T0)
+        snap = store.snapshot(T0)
         self.assertIsNone(snap["rate_limits"])
         self.assertIsNone(snap["rate_limits_stale_as_of"])
 
     def test_a_fresh_tick_clears_the_withheld_marker(self):
         store = SessionStore()
-        store.ingest(envelope(), 1000)
-        later = 1000 + RATE_LIMITS_MAX_AGE_SECS + 500
+        store.ingest(envelope(), T0)
+        later = T0 + RATE_LIMITS_MAX_AGE_SECS + 500
         store.ingest(envelope(), later)
         self.assertIsNone(store.snapshot(later)["rate_limits_stale_as_of"])
 
     def test_the_view_is_attributable_to_a_moment(self):
         # The page renders this, so the figure is never an undated claim.
         store = SessionStore()
-        store.ingest(envelope(), 1000)
-        self.assertEqual(store.snapshot(1000)["rate_limits"]["as_of"], 1000)
+        store.ingest(envelope(), T0)
+        self.assertEqual(store.snapshot(T0)["rate_limits"]["as_of"], T0)
 
     def test_non_numeric_values_do_not_break_the_snapshot(self):
         # FINDING 7, at the store level: this tick returned 204 and then
@@ -469,9 +477,87 @@ class TestRateLimitFreshness(unittest.TestCase):
         env["payload"]["rate_limits"] = {
             "five_hour": {"used_percentage": "58", "resets_at": 1_785_000_000}
         }
-        store.ingest(env, 1000)
-        windows = store.snapshot(1000)["rate_limits"]["windows"]
-        self.assertIsNone(windows[0]["pace"])
+        store.ingest(env, T0)
+        # Refused whole now, rather than stored with a blank pace; the tick's
+        # session is still recorded.
+        snap = store.snapshot(T0)
+        self.assertIsNone(snap["rate_limits"])
+        self.assertEqual(len(snap["sessions"]), 1)
+
+
+class TestNumbersFromTheWireMustBeFinite(unittest.TestCase):
+    """json.loads reads 1e400 as inf, and a 400-digit integer overflows the
+    first float it meets. Either one, in one tick, blanked the page (json.dumps
+    writes a bare Infinity the browser cannot parse) or made every snapshot a
+    500 -- and an infinite resets_at was never superseded, so the usage line
+    stayed withheld until the collector restarted.
+    """
+
+    HUGE = (float("inf"), float("-inf"), float("nan"), 10 ** 400)
+
+    def assert_serialisable(self, snapshot):
+        json.dumps(snapshot, allow_nan=False)
+
+    def test_session_numbers_that_are_not_finite_are_dropped(self):
+        for value in self.HUGE:
+            with self.subTest(value=value):
+                store = SessionStore()
+                env = envelope()
+                env["payload"]["context_window"]["used_percentage"] = value
+                env["payload"]["context_window"]["total_input_tokens"] = value
+                env["payload"]["context_window"]["context_window_size"] = value
+                env["payload"]["cost"]["total_cost_usd"] = value
+                env["payload"]["cost"]["total_duration_ms"] = value
+                store.ingest(env, T0)
+                snap = store.snapshot(T0)
+                session = snap["sessions"][0]
+                for field in ("ctx_pct", "ctx_used_tokens", "ctx_window_size",
+                              "cost_usd", "started_at"):
+                    self.assertIsNone(session[field], field)
+                self.assert_serialisable(snap)
+
+    def test_a_usage_window_that_is_not_finite_is_refused(self):
+        for field in ("used_percentage", "resets_at"):
+            for value in self.HUGE:
+                with self.subTest(field=field, value=value):
+                    store = SessionStore()
+                    store.ingest(envelope(), T0)
+                    bad = envelope(host="other")
+                    bad["payload"]["rate_limits"]["five_hour"][field] = value
+                    store.ingest(bad, T0 + 1)
+                    snap = store.snapshot(T0 + 1)
+                    self.assertEqual(snap["rate_limits"]["source_host"], "workstation")
+                    self.assert_serialisable(snap)
+
+    def test_a_reset_further_off_than_the_window_is_refused(self):
+        store = SessionStore()
+        store.ingest(envelope(), T0)
+        far = envelope(host="other")
+        far["payload"]["rate_limits"]["seven_day"]["resets_at"] = 1e300
+        store.ingest(far, T0 + 1)
+        self.assertEqual(
+            store.snapshot(T0 + 1)["rate_limits"]["source_host"], "workstation"
+        )
+
+    def test_a_refused_snapshot_does_not_block_the_next_real_one(self):
+        # The freeze: before the bound, a far-future resets_at outranked
+        # every real snapshot, so as_of never moved again.
+        store = SessionStore()
+        far = envelope(host="other")
+        far["payload"]["rate_limits"]["five_hour"]["resets_at"] = 1e300
+        store.ingest(far, T0)
+        later = T0 + RATE_LIMITS_MAX_AGE_SECS + 60
+        store.ingest(envelope(), later)
+        self.assertEqual(store.snapshot(later)["rate_limits"]["as_of"], later)
+
+    def test_a_reset_at_the_edge_of_its_window_is_kept(self):
+        store = SessionStore()
+        env = envelope()
+        env["payload"]["rate_limits"] = {
+            "five_hour": {"used_percentage": 1, "resets_at": T0 + FIVE_HOUR_SECS},
+        }
+        store.ingest(env, T0)
+        self.assertIsNotNone(store.snapshot(T0)["rate_limits"])
 
 
 class TestCtxPctTypeGuard(unittest.TestCase):
@@ -887,8 +973,18 @@ class TestEachHostSaysWhatKindOfMachineItIs(unittest.TestCase):
         store.ingest(envelope(host="server-1"), 1000)
         self.assertIsNone(self.hosts(store.snapshot(1000))["server-1"]["place"])
 
-    def test_what_a_host_says_wins_over_the_collectors_place(self):
+    def test_the_collectors_own_place_wins_for_its_own_host(self):
+        # Anything that can post could otherwise relabel the machine the
+        # collector runs on, and the label would stick for the life of the
+        # process, since the local host's record never expires.
         store = SessionStore(local_host="workstation", local_place="laptop")
+        tick = envelope(host="workstation")
+        tick["where"] = "desktop"
+        store.ingest(tick, 1000)
+        self.assertEqual(self.hosts(store.snapshot(1000))["workstation"]["place"], "laptop")
+
+    def test_its_own_host_says_what_it_is_when_the_collector_has_no_place(self):
+        store = SessionStore(local_host="workstation")
         tick = envelope(host="workstation")
         tick["where"] = "desktop"
         store.ingest(tick, 1000)

@@ -30,6 +30,7 @@ from collector.server import (
     make_server,
     read_link_state,
     tailscale_ipv4,
+    tls_context,
     tunnel_link_path,
     tunnel_state,
 )
@@ -954,3 +955,113 @@ class TestAllowedHostNames(unittest.TestCase):
         self.assertFalse(host_allowed("", allowed))
         self.assertFalse(host_allowed("box.evil.example", allowed))
         self.assertFalse(host_allowed("[evil]:4747", allowed))
+
+
+def _self_signed(directory):
+    """A throwaway localhost certificate, or None without openssl."""
+    cert = os.path.join(directory, "cert.pem")
+    key = os.path.join(directory, "key.pem")
+    try:
+        subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+             "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=localhost"],
+            check=True, capture_output=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return cert, key
+
+
+class TestTls(unittest.TestCase):
+    """Beyond loopback and the tailnet, plain HTTP hands the token to anyone
+    on the path, on every tick and every page poll."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = tempfile.mkdtemp()
+        cls.pair = _self_signed(cls.dir)
+        if cls.pair is None:
+            raise unittest.SkipTest("openssl is not available")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def setUp(self):
+        import ssl
+        self.server = make_server(
+            ("127.0.0.1", 0), SessionStore(), token=TOKEN,
+            tls=tls_context(*self.pair),
+        )
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.client = ssl.create_default_context(cafile=self.pair[0])
+        self.client.check_hostname = False
+
+    def https(self, path):
+        conn = http.client.HTTPSConnection("127.0.0.1", self.port, timeout=5,
+                                           context=self.client)
+        try:
+            conn.request("GET", path)
+            response = conn.getresponse()
+            return response.status, response.getheader("Set-Cookie"), response.read()
+        finally:
+            conn.close()
+
+    def test_it_serves_https(self):
+        self.assertEqual(self.https("/healthz")[0], 200)
+
+    def test_the_cookie_is_secure_under_tls(self):
+        status, cookie, _ = self.https("/?t=" + TOKEN)
+        self.assertEqual(status, 303)
+        self.assertIn("; Secure", cookie)
+
+    def test_a_plain_http_client_does_not_stop_it(self):
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as raw:
+            raw.sendall(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
+            try:
+                raw.recv(100)
+            except OSError:
+                pass
+        self.assertEqual(self.https("/healthz")[0], 200)
+
+    def test_a_plain_http_cookie_is_not_secure(self):
+        server = make_server(("127.0.0.1", 0), SessionStore(), token=TOKEN)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+        conn.request("GET", "/?t=" + TOKEN)
+        self.assertNotIn("Secure", conn.getresponse().getheader("Set-Cookie"))
+        conn.close()
+
+
+class TestPlainHttpWarning(unittest.TestCase):
+    def run_main(self, *args):
+        env = dict(os.environ, STATUSGUMBO_TOKEN=TOKEN, HOME=tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, env["HOME"])
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        process = subprocess.Popen(
+            [sys.executable, "-m", "collector.server", "--port", str(port),
+             "--no-local-host", *args],
+            cwd=REPO_ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        time.sleep(1.5)
+        process.terminate()
+        return process.communicate(timeout=10)[1].decode()
+
+    def test_a_public_bind_without_tls_warns(self):
+        self.assertIn("unencrypted", self.run_main("--bind", "0.0.0.0"))
+
+    def test_behind_a_tls_proxy_it_does_not(self):
+        self.assertNotIn("unencrypted", self.run_main("--bind", "0.0.0.0", "--behind-tls-proxy"))
+
+    def test_loopback_does_not_warn(self):
+        self.assertNotIn("unencrypted", self.run_main("--bind", "127.0.0.1"))
+
+    def test_cert_and_key_go_together(self):
+        self.assertIn("go together", self.run_main("--bind", "127.0.0.1", "--tls-cert", "/x"))

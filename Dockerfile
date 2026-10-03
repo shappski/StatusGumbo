@@ -18,9 +18,10 @@ ENV STATUSGUMBO_BIND=0.0.0.0 \
 EXPOSE 4747
 
 # /healthz needs no token. The port is fixed here, so publish a different one
-# with `-p 8080:4747` rather than passing --port.
+# with `-p 8080:4747` rather than passing --port. HTTPS when a certificate is
+# configured; the probe is local, so it doesn't verify it.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD ["python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4747/healthz', timeout=3)"]
+    CMD ["python3", "-c", "import os, ssl, urllib.request as u; tls = bool(os.environ.get('STATUSGUMBO_TLS_CERT')); u.urlopen(('https' if tls else 'http') + '://127.0.0.1:4747/healthz', timeout=3, context=ssl._create_unverified_context() if tls else None)"]
 
 # No machine of its own to list (the hostname is a container id), and cloud
 # sessions stay off (the default, stated so a changed default can't turn them

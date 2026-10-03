@@ -16,6 +16,7 @@ import os
 import re
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -268,6 +269,23 @@ TAILNET_NETWORKS = (
 )
 
 
+def is_private_bind(text):
+    """Loopback or tailnet: only the owner can reach it. ValueError if not an IP."""
+    address = ipaddress.ip_address(text)
+    return address.is_loopback or any(
+        address in network for network in TAILNET_NETWORKS
+        if network.version == address.version
+    )
+
+
+def tls_context(cert, key):
+    """A server TLS context from a PEM certificate chain and key."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(cert, key)
+    return context
+
+
 def plan_binds(requested, tailnet_ip, token):
     """The addresses to listen on, or ValueError if that would be unsafe.
 
@@ -282,13 +300,9 @@ def plan_binds(requested, tailnet_ip, token):
     plan = []
     for text in requested:
         try:
-            address = ipaddress.ip_address(text)
+            private = is_private_bind(text)
         except ValueError:
             raise ValueError("--bind takes an IP address, not %r" % text)
-        private = address.is_loopback or any(
-            address in network for network in TAILNET_NETWORKS
-            if network.version == address.version
-        )
         if not private and token is None:
             raise ValueError(
                 "binding %s exposes the collector beyond loopback and the "
@@ -299,12 +313,36 @@ def plan_binds(requested, tailnet_ip, token):
     return plan
 
 
-class _Ipv6Server(ThreadingHTTPServer):
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+    tls = None
+    handshake_timeout = IDLE_TIMEOUT_SECS
+
+    def finish_request(self, request, client_address):
+        # The TLS handshake runs here, in the request's own thread, so a
+        # client that stalls in it holds only that thread, never accept().
+        if self.tls is None:
+            super().finish_request(request, client_address)
+            return
+        request.settimeout(self.handshake_timeout)
+        try:
+            wrapped = self.tls.wrap_socket(request, server_side=True)
+        except (ssl.SSLError, OSError):
+            # A plain-HTTP client, a scanner, a dropped connection: nothing
+            # worth a traceback in the journal.
+            return
+        try:
+            super().finish_request(wrapped, client_address)
+        finally:
+            wrapped.close()
+
+
+class _Ipv6Server(_Server):
     address_family = socket.AF_INET6
 
 
 def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
-                cloud=None, token=None, allowed_hosts=None):
+                cloud=None, token=None, allowed_hosts=None, tls=None):
     def matches(candidate):
         # Constant-time, so response timing does not leak how much of a guess
         # was right.
@@ -460,12 +498,13 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
                         return
                     # Swap the link for a cookie and reload clean, so the
                     # token does not stay in the address bar or history.
-                    # No Secure flag: the collector is usually plain HTTP on
-                    # a tailnet, where Secure would drop the cookie.
+                    # Secure only under TLS: the collector is usually plain
+                    # HTTP on a tailnet, where Secure would drop the cookie.
                     self._respond(303, b"", headers=[
                         ("Location", "/"),
                         ("Set-Cookie", "%s=%s; Path=/; Max-Age=%d; HttpOnly; "
-                         "SameSite=Strict" % (COOKIE_NAME, token, COOKIE_MAX_AGE)),
+                         "SameSite=Strict%s" % (COOKIE_NAME, token, COOKIE_MAX_AGE,
+                                                "; Secure" if tls else "")),
                     ])
                     return
                 if not (matches(self._bearer()) or matches(self._cookie())):
@@ -524,9 +563,10 @@ def make_server(address, store, clock=time.time, idle_timeout=IDLE_TIMEOUT_SECS,
             # logging is pure noise in the journal.
             pass
 
-    server_class = _Ipv6Server if ":" in address[0] else ThreadingHTTPServer
+    server_class = _Ipv6Server if ":" in address[0] else _Server
     server = server_class(address, Handler)
-    server.daemon_threads = True
+    server.tls = tls
+    server.handshake_timeout = idle_timeout
     return server
 
 
@@ -566,6 +606,21 @@ def main(argv=None):
              "any IP address are always allowed.",
     )
     parser.add_argument(
+        "--tls-cert", default=os.environ.get("STATUSGUMBO_TLS_CERT"),
+        help="PEM certificate chain to serve HTTPS with; also "
+             "STATUSGUMBO_TLS_CERT. Needs --tls-key.",
+    )
+    parser.add_argument(
+        "--tls-key", default=os.environ.get("STATUSGUMBO_TLS_KEY"),
+        help="PEM private key for --tls-cert; also STATUSGUMBO_TLS_KEY.",
+    )
+    parser.add_argument(
+        "--behind-tls-proxy", action="store_true",
+        default=os.environ.get("STATUSGUMBO_BEHIND_TLS_PROXY") == "1",
+        help="say that HTTPS is terminated in front of this collector, which "
+             "silences the plain-HTTP warning for a non-private bind",
+    )
+    parser.add_argument(
         "--no-local-host", action="store_true",
         help="do not list this machine on the page; for a collector that "
              "runs somewhere with no reporter of its own, such as a container",
@@ -594,6 +649,28 @@ def main(argv=None):
         print("error: %s" % error, file=sys.stderr)
         return 2
 
+    if bool(args.tls_cert) != bool(args.tls_key):
+        print("error: --tls-cert and --tls-key go together", file=sys.stderr)
+        return 2
+    tls = None
+    if args.tls_cert:
+        try:
+            tls = tls_context(args.tls_cert, args.tls_key)
+        except (OSError, ssl.SSLError) as error:
+            print("error: cannot load the TLS certificate: %s" % error, file=sys.stderr)
+            return 2
+    # Beyond loopback and the tailnet the token rides every tick and every
+    # page poll, so plain HTTP hands it to anyone on the path.
+    if tls is None and not args.behind_tls_proxy:
+        for address in addresses:
+            if not is_private_bind(address):
+                print(
+                    "warning: serving plain HTTP on %s; the token crosses the "
+                    "network unencrypted. Use --tls-cert/--tls-key, or put "
+                    "HTTPS in front and pass --behind-tls-proxy." % address,
+                    file=sys.stderr,
+                )
+
     if args.no_local_host:
         store = SessionStore()
     else:
@@ -614,10 +691,11 @@ def main(argv=None):
     servers = []
     for address in addresses:
         server = make_server((address, args.port), store, cloud=cloud, token=token,
-                             allowed_hosts=allowed_hosts)
+                             allowed_hosts=allowed_hosts, tls=tls)
         servers.append(server)
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        print("listening on http://%s:%d%s" % (
+        print("listening on %s://%s:%d%s" % (
+            "https" if tls else "http",
             "[%s]" % address if ":" in address else address, args.port, " (token required)" if token else ""
         ), file=sys.stderr)
 

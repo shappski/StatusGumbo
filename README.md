@@ -53,7 +53,8 @@ the reporter up when it restarts.
 ## The collector
 
     python3 -m collector.server [--port 4747] [--bind ADDR ...] [--token-file PATH]
-                                [--allow-host NAME ...] [--cloud] [--no-local-host]
+                                [--allow-host NAME ...] [--tls-cert PEM --tls-key PEM]
+                                [--behind-tls-proxy] [--cloud] [--no-local-host]
 
 | Option | Environment | Meaning |
 |---|---|---|
@@ -61,6 +62,8 @@ the reporter up when it restarts.
 | `--bind ADDR` | `STATUSGUMBO_BIND` (comma-separated) | Addresses to listen on. Default: `127.0.0.1` plus this machine's Tailscale address, if it has one. |
 | `--token-file PATH` | `STATUSGUMBO_TOKEN_FILE`, `STATUSGUMBO_TOKEN` | The shared token. Without one, nothing is required. |
 | `--allow-host NAME` | `STATUSGUMBO_ALLOW_HOSTS` (comma-separated) | Another name you reach the collector by, when it has no token ([below](#token-and-where-it-listens)). |
+| `--tls-cert PEM`, `--tls-key PEM` | `STATUSGUMBO_TLS_CERT`, `STATUSGUMBO_TLS_KEY` | Serve HTTPS. The reporters' machines must trust the certificate (a public CA, or `tailscale cert`). |
+| `--behind-tls-proxy` | `STATUSGUMBO_BEHIND_TLS_PROXY=1` | HTTPS is handled in front of the collector; silences the plain-HTTP warning. |
 | `--cloud` | | Also show this account's cloud sessions ([below](#cloud-sessions)). Off by default. |
 | `--no-local-host` | | Don't list the collector's own machine. The Docker image sets this. |
 | | `STATUSGUMBO_HOST`, `STATUSGUMBO_PLACE` | The collector's own machine's name and place, when it also runs Claude Code. |
@@ -92,9 +95,11 @@ open.
   so a web page the phone visits can't post sessions.
 - The phone opens `/?t=<token>` once and gets a year-long `HttpOnly`,
   `SameSite=Strict` cookie. Rotating the token withdraws access.
-- The cookie has no `Secure` flag, because the usual setup is plain HTTP on a
-  private network. Put HTTPS in front of a collector reachable from the
-  internet.
+- On any address beyond loopback and Tailscale, the token crosses the network
+  on every tick and every page poll, so use HTTPS there: `--tls-cert` and
+  `--tls-key`, or a proxy in front with `--behind-tls-proxy`. Without either,
+  the collector warns at startup. Under `--tls-cert` the cookie is `Secure`;
+  on plain HTTP it can't be, or the browser would drop it.
 - `GET /healthz` answers `ok` without the token, for health checks.
 
 ### In Docker
@@ -105,6 +110,11 @@ without `STATUSGUMBO_TOKEN`, or a mounted file named by
 than `--port`, because the health check probes 4747. The image runs with
 `--no-local-host`, since its hostname is a container id and nothing inside
 reports. Cloud sessions stay off, because the container has no claude.ai login.
+
+Serve HTTPS by mounting a certificate and key and setting
+`STATUSGUMBO_TLS_CERT` and `STATUSGUMBO_TLS_KEY` to their paths, or put an
+HTTPS proxy in front and set `STATUSGUMBO_BEHIND_TLS_PROXY=1`. Without
+either, the log warns that the token travels unencrypted.
 
 ### As a systemd user service (Linux)
 

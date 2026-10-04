@@ -164,7 +164,7 @@ class TestFetchSessions(unittest.TestCase):
             fetch_sessions("t", "o", NOW, FakeApi([], status=429))
 
     def test_a_response_without_a_list_is_an_error_not_an_empty_list(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "^response has no session list$"):
             fetch_sessions("t", "o", NOW, FakeApi([{"sessions": []}]))
 
 
@@ -293,7 +293,7 @@ class TestRoutineSessions(unittest.TestCase):
             if url.endswith("/triggers"):
                 return 200, b'{"triggers": []}'
             return 200, b'{"data": []}'
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "^response has no trigger list$"):
             fetch_sessions("tok", "org", NOW, api)
 
     def test_the_poller_remembers_archived_routine_sessions(self):

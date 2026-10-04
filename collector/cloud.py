@@ -222,8 +222,8 @@ class _Expired(Exception):
     """A 401: the token on disk was refused."""
 
 
-def _get_page(get, url, headers):
-    """(page dict, its data list), or raises."""
+def _get_page(get, url, headers, noun):
+    """(page dict, its data list), or raises. `noun` names the list in errors."""
     status, body = get(url, headers)
     if status == 401:
         raise _Expired()
@@ -234,7 +234,7 @@ def _get_page(get, url, headers):
     # The one shape check that matters: without a list here, "no
     # sessions" would be a guess, so it is an error instead.
     if not isinstance(data, list):
-        raise ValueError("response has no list")
+        raise ValueError("response has no %s list" % noun)
     return page, data
 
 
@@ -244,7 +244,7 @@ def _routine_sessions(headers, now, skip, archived, get):
     Sessions in `skip` or `archived` are not asked for; an archived one
     found here is added to `archived`, since archiving is for good.
     """
-    _, triggers = _get_page(get, TRIGGERS_URL, dict(headers, **{"anthropic-beta": TRIGGERS_BETA}))
+    _, triggers = _get_page(get, TRIGGERS_URL, dict(headers, **{"anthropic-beta": TRIGGERS_BETA}), "trigger")
     sessions = []
     for trigger in triggers:
         if not isinstance(trigger, dict):
@@ -257,7 +257,7 @@ def _routine_sessions(headers, now, skip, archived, get):
         if session_id in skip or session_id in archived or fired is None or now - fired > LOOKBACK_SECS:
             continue
         query = urllib.parse.urlencode({"trigger_id": trigger_id, "limit": PAGE_SIZE})
-        _, data = _get_page(get, API_URL + "?" + query, headers)
+        _, data = _get_page(get, API_URL + "?" + query, headers, "session")
         for raw in data:
             if isinstance(raw, dict) and raw.get("id") == session_id:
                 if raw.get("status") == "archived":
@@ -294,7 +294,7 @@ def fetch_sessions(token, org, now, get=http_get, archived=None):
             query = {"limit": PAGE_SIZE}
             if cursor:
                 query["cursor"] = cursor
-            page, data = _get_page(get, API_URL + "?" + urllib.parse.urlencode(query), headers)
+            page, data = _get_page(get, API_URL + "?" + urllib.parse.urlencode(query), headers, "session")
             for raw in data:
                 parsed = parse_session(raw)
                 if parsed is not None:

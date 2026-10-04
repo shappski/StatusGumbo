@@ -126,7 +126,7 @@ class TestFetchSessions(unittest.TestCase):
     def test_sends_the_login_and_filters_the_list(self):
         api = FakeApi([{"data": [raw_session(), raw_session(id="b", environment_kind="bridge")],
                         "next_cursor": None}])
-        sessions, state = fetch_sessions("tok", "org", NOW, api)
+        sessions, state, _ = fetch_sessions("tok", "org", NOW, api)
         self.assertEqual(state, "ok")
         self.assertEqual([s["id"] for s in sessions], ["cse_01abc"])
         self.assertEqual(api.headers["Authorization"], "Bearer tok")
@@ -141,7 +141,7 @@ class TestFetchSessions(unittest.TestCase):
             {"data": [old], "next_cursor": "c2"},
             {"data": [], "next_cursor": None},
         ])
-        sessions, _ = fetch_sessions("tok", "org", NOW, api)
+        sessions, _, _ = fetch_sessions("tok", "org", NOW, api)
         self.assertEqual(len(api.urls), 2)
         self.assertIn("cursor=c1", api.urls[1])
         # Newest first by creation, so the old one comes last.
@@ -152,12 +152,12 @@ class TestFetchSessions(unittest.TestCase):
         older = raw_session(id="older", created_at=iso(NOW - 7200))
         newer = raw_session(id="newer", created_at=iso(NOW - 60))
         api = FakeApi([{"data": [undated, older, newer], "next_cursor": None}])
-        sessions, _ = fetch_sessions("tok", "org", NOW, api)
+        sessions, _, _ = fetch_sessions("tok", "org", NOW, api)
         self.assertEqual([s["id"] for s in sessions], ["newer", "older", "undated"])
 
     def test_401_is_a_login_problem(self):
         self.assertEqual(fetch_sessions("t", "o", NOW, FakeApi([], status=401)),
-                         (None, "login_expired"))
+                         (None, "login_expired", None))
 
     def test_other_statuses_raise(self):
         with self.assertRaises(ApiError):
@@ -217,7 +217,7 @@ class TestRoutineSessions(unittest.TestCase):
             triggers=[raw_trigger()],
             by_trigger={"trig_1": [raw_session(id="cse_routine", created_at=iso(NOW - 600))]},
         )
-        sessions, state = fetch_sessions("tok", "org", NOW, api)
+        sessions, state, _ = fetch_sessions("tok", "org", NOW, api)
         self.assertEqual(state, "ok")
         self.assertEqual([s["id"] for s in sessions], ["cse_routine", "cse_01abc"])
 
@@ -235,7 +235,7 @@ class TestRoutineSessions(unittest.TestCase):
             triggers=[raw_trigger()],
             by_trigger={"trig_1": [raw_session(id="cse_routine", status="archived")]},
         )
-        sessions, _ = fetch_sessions("tok", "org", NOW, api, archived=archived)
+        sessions, _, _ = fetch_sessions("tok", "org", NOW, api, archived=archived)
         self.assertEqual(sessions, [])
         self.assertEqual(archived, {"cse_routine"})
         fetch_sessions("tok", "org", NOW + 60, api, archived=archived)
@@ -268,7 +268,7 @@ class TestRoutineSessions(unittest.TestCase):
         api = RoutineApi(listed=[raw_session(id="cse_routine")],
                          triggers=[raw_trigger()],
                          by_trigger={"trig_1": [raw_session(id="cse_routine")]})
-        sessions, _ = fetch_sessions("tok", "org", NOW, api)
+        sessions, _, _ = fetch_sessions("tok", "org", NOW, api)
         self.assertEqual([s["id"] for s in sessions], ["cse_routine"])
         self.assertEqual(api.trigger_lookups(), [])
 
@@ -278,23 +278,39 @@ class TestRoutineSessions(unittest.TestCase):
         api = RoutineApi(triggers=[raw_trigger()],
                          by_trigger={"trig_1": [raw_session(id="cse_older"),
                                                 raw_session(id="cse_routine")]})
-        sessions, _ = fetch_sessions("tok", "org", NOW, api)
+        sessions, _, _ = fetch_sessions("tok", "org", NOW, api)
         self.assertEqual([s["id"] for s in sessions], ["cse_routine"])
 
-    def test_a_failing_trigger_list_fails_the_poll(self):
-        # Not a quietly shorter list: the routine cards would vanish with no
-        # sign of why, which is the failure this section is built to avoid.
+    def test_a_failing_trigger_list_is_said_beside_the_plain_list(self):
+        # Not a quietly shorter list — the routine cards would vanish with no
+        # sign of why — and not a blank section either: the plain list does
+        # not need the beta endpoint, so a retired beta must not take it down.
         api = RoutineApi(listed=[raw_session()], trigger_status=404)
-        with self.assertRaises(ApiError):
-            fetch_sessions("tok", "org", NOW, api)
+        with unittest.mock.patch("sys.stderr"):
+            sessions, state, routine = fetch_sessions("tok", "org", NOW, api)
+        self.assertEqual(state, "ok")
+        self.assertEqual([s["id"] for s in sessions], ["cse_01abc"])
+        self.assertEqual(routine, "routine sessions unknown: HTTP 404")
 
     def test_a_trigger_list_without_a_list_is_an_error(self):
         def api(url, headers):
             if url.endswith("/triggers"):
                 return 200, b'{"triggers": []}'
             return 200, b'{"data": []}'
-        with self.assertRaisesRegex(ValueError, "^response has no trigger list$"):
-            fetch_sessions("tok", "org", NOW, api)
+        with unittest.mock.patch("sys.stderr"):
+            _, _, routine = fetch_sessions("tok", "org", NOW, api)
+        self.assertEqual(routine, "routine sessions unknown: unexpected response (see the collector's log)")
+
+    def test_the_poller_serves_the_routine_line_with_its_list(self):
+        api = RoutineApi(listed=[raw_session()], trigger_status=503)
+        poller = CloudPoller(clock=lambda: NOW, get=api, login=lambda now: ("tok", "org"))
+        with unittest.mock.patch("sys.stderr"):
+            self.assertEqual(poller.poll_once(), POLL_SECS)
+        view = poller.view(NOW)
+        self.assertEqual(view["state"], "ok")
+        self.assertEqual(len(view["sessions"]), 1)
+        self.assertEqual(view["routine_detail"], "routine sessions unknown: HTTP 503")
+        self.assertIsNone(poller.view(NOW + MAX_AGE_SECS + 1)["routine_detail"])
 
     def test_the_poller_remembers_archived_routine_sessions(self):
         api = RoutineApi(

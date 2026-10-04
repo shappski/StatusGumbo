@@ -538,6 +538,15 @@ class TestTheCloudSectionSaysWhichSilence(unittest.TestCase):
     def test_a_failed_poll_is_said_above_the_cards_it_did_not_refresh(self):
         self.assertIn("cloud.state !== 'ok'", function_source("renderCloud"))
 
+    def test_missing_routine_sessions_are_said_and_not_called_none(self):
+        # 2026-10-04: a failing trigger list keeps the plain cards and sends
+        # routine_detail instead. An empty plain list beside it must not
+        # read as "no active cloud sessions", which the routines may falsify.
+        body = function_source("renderCloud")
+        self.assertIn("esc(cloud.routine_detail)", body)
+        self.assertIn("no other cloud sessions", body)
+        self.assertIn("warning + routine + pinnedFirst(cloud.sessions", body)
+
     def test_an_unknown_state_is_shown_verbatim_not_guessed(self):
         self.assertIn("|| [s.bucket", function_source("renderCloudSession"))
 

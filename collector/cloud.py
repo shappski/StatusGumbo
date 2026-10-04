@@ -57,6 +57,7 @@ MAX_AGE_SECS = 5 * 60        # The same rule as RATE_LIMITS_MAX_AGE_SECS: past
                              # this the last good list is withheld, not served
                              # as though it were current.
 EXPIRED_TEXT = "login expired — any local claude session refreshes it"
+ROUTINE_UNKNOWN_TEXT = "routine sessions unknown: %s"
 CLOUD_KIND = "anthropic_cloud"
                              # The list also carries every Remote Control
                              # ("bridge") session, including local ones this
@@ -277,11 +278,17 @@ def _routine_sessions(headers, now, skip, archived, get):
 
 
 def fetch_sessions(token, org, now, get=http_get, archived=None):
-    """Every shown cloud session, or raises. Returns (sessions, state).
+    """Every shown cloud session, or raises. Returns (sessions, state,
+    routine_detail).
 
     state is "ok", or "login_expired" for a 401 — the file said the token
     was good and the server disagreed, which is still a login problem and
     not a fault of the page.
+
+    routine_detail is None, or the words for why routine sessions are
+    missing from an otherwise good list. The routine side rests on a beta
+    endpoint the plain list does not need, so its failure is said beside the
+    plain cards instead of taking them down with it.
 
     `archived` is the caller's set of routine sessions already seen archived,
     kept across polls so they are not asked for again; it is added to here.
@@ -309,20 +316,28 @@ def fetch_sessions(token, org, now, get=http_get, archived=None):
             oldest = _epoch(data[-1].get("last_event_at")) if data and isinstance(data[-1], dict) else None
             if not cursor or oldest is None or now - oldest > LOOKBACK_SECS:
                 break
-        # A failure here fails the whole poll rather than leaving a shorter
-        # list: routine cards gone with no sign of why is the quiet
-        # emptiness this section is built never to show.
         listed = {s["id"] for s in sessions}
-        sessions.extend(_routine_sessions(headers, now, listed, archived, get))
+        routine_detail = None
+        try:
+            sessions.extend(_routine_sessions(headers, now, listed, archived, get))
+        except _Expired:
+            raise
+        except ApiError as err:
+            print("cloud poll: routines: %s" % err, file=sys.stderr)
+            routine_detail = ROUTINE_UNKNOWN_TEXT % err
+        except Exception as err:
+            # As broad as poll_once's catch, for the same undocumented schema.
+            traceback.print_exc(file=sys.stderr)
+            routine_detail = ROUTINE_UNKNOWN_TEXT % "unexpected response (see the collector's log)"
     except _Expired:
-        return None, "login_expired"
+        return None, "login_expired", None
     # Position must not move while the page is read, so the order comes from
     # when a session was created, which never changes — not from its activity.
     # Newest first, like the local hosts; one with no creation time goes last.
     sessions.sort(key=lambda s: (
         s["created_at"] is None, -(s["created_at"] or 0), s["id"],
     ))
-    return sessions, "ok"
+    return sessions, "ok", routine_detail
 
 
 class CloudPoller:
@@ -342,6 +357,7 @@ class CloudPoller:
         self.as_of = None
         self.state = "starting"
         self.detail = None
+        self.routine_detail = None   # belongs to self.sessions, set with it
         self.failures = 0
         self._archived = set()   # routine sessions seen archived; poll thread only
         self._ctx_seen = {}      # id -> (used_tokens, as_of, exact); poll thread only
@@ -351,7 +367,7 @@ class CloudPoller:
         now = self._clock()
         try:
             token, org = self._login(now)
-            sessions, state = fetch_sessions(token, org, now, self._get, self._archived)
+            sessions, state, routine_detail = fetch_sessions(token, org, now, self._get, self._archived)
         except LoginUnavailable as err:
             sessions, state, detail = None, err.state, err.detail
         except ApiError as err:
@@ -373,6 +389,7 @@ class CloudPoller:
             if state == "ok":
                 sessions = self._date_context(sessions, now)
                 self.sessions, self.as_of, self.failures = sessions, now, 0
+                self.routine_detail = routine_detail
                 return POLL_SECS
             if state == "error":
                 self.failures += 1
@@ -429,6 +446,7 @@ class CloudPoller:
                 # too old is dated, one never fetched is not.
                 "stale_as_of": self.as_of if self.as_of is not None and not fresh else None,
                 "sessions": sessions if fresh else None,
+                "routine_detail": self.routine_detail if fresh else None,
             }
 
     def run_forever(self):

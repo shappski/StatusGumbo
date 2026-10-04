@@ -830,8 +830,15 @@ function renderCloud(cloud) {
   const warning = cloud.state !== 'ok'
     ? '<div class="meta">as of ' + clock(num(cloud.as_of)) + (detail ? ' · ' + detail : '') + '</div>'
     : '';
-  if (!cloud.sessions.length) return line('no active cloud sessions') + warning;
-  return head + warning + pinnedFirst(cloud.sessions, cloudKey).map(renderCloudSession).join('');
+  // Routine sessions come from a second endpoint that can fail on its own;
+  // the plain cards are still current, so they stay, and the gap is said.
+  const routine = cloud.routine_detail
+    ? '<div class="meta">' + esc(cloud.routine_detail) + '</div>'
+    : '';
+  if (!cloud.sessions.length) {
+    return line(routine ? 'no other cloud sessions' : 'no active cloud sessions') + warning + routine;
+  }
+  return head + warning + routine + pinnedFirst(cloud.sessions, cloudKey).map(renderCloudSession).join('');
 }
 
 function show(html) {

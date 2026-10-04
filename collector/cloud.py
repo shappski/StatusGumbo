@@ -72,6 +72,12 @@ TRIGGERS_BETA = "ccr-triggers-2026-01-30"
                              # it is found from its trigger's last_run. The
                              # path and beta header are the ones in the 2.1.288
                              # binary; without the header the path is a 404.
+FIRED_LOOKBACK_SECS = 60 * 24 * 3600
+                             # A routine session is shown by the plain list's
+                             # rule, 14 days quiet. A run cannot be active
+                             # before it fired, but can long after, so this is
+                             # wider: it only spares a lookup per trigger that
+                             # ever ran, which would otherwise grow for good.
 
 
 def credentials_path():
@@ -279,7 +285,7 @@ def _routine_sessions(headers, now, skip, archived, get):
         if fired is None:
             problems.append("a trigger that ran has no usable last_fired_at")
             continue
-        if session_id in skip or session_id in archived or now - fired > LOOKBACK_SECS:
+        if session_id in skip or session_id in archived or now - fired > FIRED_LOOKBACK_SECS:
             continue
         query = urllib.parse.urlencode({"trigger_id": trigger_id, "limit": PAGE_SIZE})
         runs, data = _get_page(get, API_URL + "?" + query, headers, "session")
@@ -289,7 +295,8 @@ def _routine_sessions(headers, now, skip, archived, get):
                     archived.add(session_id)
                 else:
                     parsed = parse_session(raw)
-                    if parsed is not None:
+                    last = parsed and parsed["last_event_at"]
+                    if parsed is not None and (last is None or now - last <= LOOKBACK_SECS):
                         sessions.append(parsed)
                 break
         else:

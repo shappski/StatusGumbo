@@ -6,6 +6,7 @@ import unittest.mock
 import urllib.parse
 
 from collector.cloud import (
+    FIRED_LOOKBACK_SECS,
     LOOKBACK_SECS,
     MAX_AGE_SECS,
     MAX_BACKOFF_SECS,
@@ -256,8 +257,30 @@ class TestRoutineSessions(unittest.TestCase):
         self.assertEqual(len(api.trigger_lookups()), 2)
         self.assertEqual(archived, set())
 
-    def test_a_trigger_that_last_fired_before_the_lookback_is_skipped(self):
-        api = RoutineApi(triggers=[raw_trigger(fired=NOW - LOOKBACK_SECS - 60)])
+    def test_a_routine_session_still_active_long_after_it_fired_is_shown(self):
+        # The cutoff is the plain list's, 14 days quiet, not 14 days since
+        # the trigger fired: a blocked one-off run must not vanish at day 15.
+        api = RoutineApi(
+            triggers=[raw_trigger(fired=NOW - LOOKBACK_SECS - 86400)],
+            by_trigger={"trig_1": [raw_session(id="cse_routine", last_event_at=iso(NOW - 3600))]},
+        )
+        sessions, _, routine = fetch_sessions("tok", "org", NOW, api)
+        self.assertEqual([s["id"] for s in sessions], ["cse_routine"])
+        self.assertIsNone(routine)
+
+    def test_a_routine_session_quiet_past_the_lookback_is_not_shown(self):
+        api = RoutineApi(
+            triggers=[raw_trigger(fired=NOW - LOOKBACK_SECS - 86400)],
+            by_trigger={"trig_1": [raw_session(
+                id="cse_routine", last_event_at=iso(NOW - LOOKBACK_SECS - 60),
+                updated_at=iso(NOW - LOOKBACK_SECS - 60))]},
+        )
+        sessions, _, routine = fetch_sessions("tok", "org", NOW, api)
+        self.assertEqual(sessions, [])
+        self.assertIsNone(routine)
+
+    def test_a_trigger_that_last_fired_before_the_fired_lookback_is_skipped(self):
+        api = RoutineApi(triggers=[raw_trigger(fired=NOW - FIRED_LOOKBACK_SECS - 60)])
         fetch_sessions("tok", "org", NOW, api)
         self.assertEqual(api.trigger_lookups(), [])
 

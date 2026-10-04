@@ -292,6 +292,15 @@ class TestRoutineSessions(unittest.TestCase):
         self.assertEqual([s["id"] for s in sessions], ["cse_01abc"])
         self.assertEqual(routine, "routine sessions unknown: HTTP 404")
 
+    def test_a_401_from_the_trigger_list_is_not_a_lapsed_login(self):
+        # The plain list accepted the same token a moment earlier.
+        api = RoutineApi(listed=[raw_session()], trigger_status=401)
+        with unittest.mock.patch("sys.stderr"):
+            sessions, state, routine = fetch_sessions("tok", "org", NOW, api)
+        self.assertEqual(state, "ok")
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(routine, "routine sessions unknown: HTTP 401")
+
     def test_a_trigger_list_without_a_list_is_an_error(self):
         def api(url, headers):
             if url.endswith("/triggers"):

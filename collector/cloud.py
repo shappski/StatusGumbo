@@ -321,7 +321,11 @@ def fetch_sessions(token, org, now, get=http_get, archived=None):
         try:
             sessions.extend(_routine_sessions(headers, now, listed, archived, get))
         except _Expired:
-            raise
+            # The plain list just took this token, so a 401 here is the beta
+            # or its scope refused, not a lapsed login: saying "login
+            # expired" would send the reader to refresh a login that works.
+            print("cloud poll: routines: HTTP 401", file=sys.stderr)
+            routine_detail = ROUTINE_UNKNOWN_TEXT % "HTTP 401"
         except ApiError as err:
             print("cloud poll: routines: %s" % err, file=sys.stderr)
             routine_detail = ROUTINE_UNKNOWN_TEXT % err

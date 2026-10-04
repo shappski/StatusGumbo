@@ -116,6 +116,32 @@ open.
   `/icons/…`), since Chrome fetches them without the cookie. They say nothing
   about any session.
 
+### HTTPS
+
+Either way works: the collector serves it with `--tls-cert` and `--tls-key`,
+or a proxy in front does (Caddy, nginx, `tailscale serve`) and the collector
+gets `--behind-tls-proxy`. A few things to know first:
+
+- **The reporters must trust the certificate.** The reporter posts with curl,
+  which checks against the system's certificate store and has no option of its
+  own for another CA. A public CA (Let's Encrypt, `tailscale cert`,
+  `tailscale serve`) works with nothing more to do. For a self-signed
+  certificate or a private CA, add it to each reporting machine's system store,
+  or point curl's `CURL_CA_BUNDLE` at it in the environment the status line
+  runs in. Otherwise every post fails, silently, because the reporter never
+  writes into your status line.
+- **Serve it at the root of its address**, on a name or port of its own. The
+  page, its manifest and its cookie all use root paths (`/api/sessions`,
+  `"scope": "/"`, `Path=/`), so a proxy that mounts it under a sub-path such as
+  `/status` breaks it. Several apps can share one hostname on different ports:
+  each port keeps its own browser storage and home-screen app.
+- **A proxy has to pass the `Host` header through.** Without a token, also add
+  the name the proxy serves with `--allow-host`, or every request gets `421`.
+- **A new host name means signing in again.** The browser keeps the cookie per
+  host name, so reaching the collector by another name (a proxy's, say) needs
+  `/?t=<token>` opened once more there. A home-screen shortcut belongs to the
+  address it was added from, so re-add it from the new one.
+
 ### In Docker
 
 The image, `ghcr.io/shappski/statusgumbo`, holds the collector only. Tags are

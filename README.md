@@ -267,12 +267,23 @@ Remote Control has no claude.ai page, so its card has no link.
 > - It takes the OAuth access token Claude Code keeps in
 >   `~/.claude/.credentials.json` and sends it to Anthropic's API, as Claude
 >   Code does, from a program that isn't Claude Code.
+> - **It may not be permitted.** Anthropic's [Legal and compliance][legal]
+>   page says OAuth authentication is for "ordinary use of Claude Code and
+>   other native Anthropic applications", and that developers may not route
+>   requests through plan credentials on behalf of their users, or "collect,
+>   store, or intermediate Claude.ai credentials or session tokens". It adds
+>   that Anthropic may enforce these restrictions "without prior notice". A
+>   program that reads your token and calls Anthropic itself is not clearly
+>   within that. This is the author's reading, not legal advice.
 > - The endpoints it calls are undocumented. Anthropic may change or remove
->   them, or decide this use isn't allowed, at any time and without notice.
-> - This project is not affiliated with or endorsed by Anthropic. Check
->   Anthropic's current terms yourself before you turn it on.
+>   them at any time and without notice.
+> - This project is not affiliated with or endorsed by Anthropic. Read the
+>   [Authentication and credential use][legal] section yourself before you turn
+>   it on.
 > - Nothing else in StatusGumbo touches your login. Without `--cloud`, none of
 >   this applies.
+
+[legal]: https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use
 
 Sessions on claude.ai/code have no status line of ours. With `--cloud`, the
 collector polls `GET https://api.anthropic.com/v1/code/sessions` once a minute,

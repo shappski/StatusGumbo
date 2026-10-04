@@ -269,9 +269,17 @@ def _routine_sessions(headers, now, skip, archived, get):
         trigger_id = trigger.get("id")
         session_id = _dig(trigger, "last_run", "session_id")
         fired = _epoch(trigger.get("last_fired_at"))
-        if not (isinstance(trigger_id, str) and trigger_id and isinstance(session_id, str) and session_id):
+        if not (isinstance(session_id, str) and session_id):
+            continue     # never ran: nothing of its to show
+        # It ran, so a session exists; a field that no longer reads is a
+        # changed response, and skipping on it would drop the card unsaid.
+        if not (isinstance(trigger_id, str) and trigger_id):
+            problems.append("a trigger that ran has no usable id")
             continue
-        if session_id in skip or session_id in archived or fired is None or now - fired > LOOKBACK_SECS:
+        if fired is None:
+            problems.append("a trigger that ran has no usable last_fired_at")
+            continue
+        if session_id in skip or session_id in archived or now - fired > LOOKBACK_SECS:
             continue
         query = urllib.parse.urlencode({"trigger_id": trigger_id, "limit": PAGE_SIZE})
         _, data = _get_page(get, API_URL + "?" + query, headers, "session")

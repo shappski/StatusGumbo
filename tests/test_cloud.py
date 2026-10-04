@@ -266,6 +266,25 @@ class TestRoutineSessions(unittest.TestCase):
         fetch_sessions("tok", "org", NOW, api)
         self.assertEqual(api.trigger_lookups(), [])
 
+    def test_a_trigger_that_ran_but_no_longer_reads_is_said(self):
+        bad_time = raw_trigger(trigger_id="trig_2", session_id="cse_2")
+        bad_time["last_fired_at"] = 1790000000
+        cases = [
+            (raw_trigger(trigger_id=""), "a trigger that ran has no usable id"),
+            (bad_time, "a trigger that ran has no usable last_fired_at"),
+        ]
+        for bad, problem in cases:
+            api = RoutineApi(
+                triggers=[raw_trigger(), bad, dict(bad)],
+                by_trigger={"trig_1": [raw_session(id="cse_routine")]},
+            )
+            with unittest.mock.patch("sys.stderr"):
+                sessions, state, routine = fetch_sessions("tok", "org", NOW, api)
+            self.assertEqual(state, "ok")
+            self.assertEqual([s["id"] for s in sessions], ["cse_routine"])
+            # Said once, however many triggers it hit.
+            self.assertEqual(routine, "routine sessions incomplete: " + problem)
+
     def test_a_session_already_listed_is_not_looked_up_or_doubled(self):
         api = RoutineApi(listed=[raw_session(id="cse_routine")],
                          triggers=[raw_trigger()],

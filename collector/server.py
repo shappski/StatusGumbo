@@ -804,7 +804,7 @@ def main(argv=None):
             "warning: --cloud sends your Claude Code login token to an "
             "undocumented Anthropic endpoint; it is unofficial and may break "
             "or be disallowed (see README, Cloud sessions)",
-            file=sys.stderr,
+            file=sys.stderr, flush=True,
         )
         cloud = CloudPoller()
         threading.Thread(target=cloud.run_forever, daemon=True).start()

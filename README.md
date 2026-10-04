@@ -305,6 +305,11 @@ to stderr each time it starts with `--cloud`.
   it, because it would mean holding their tokens.
 - The collector never refreshes the login. When it lapses, the section says
   so, and running any local `claude` session refreshes it.
+- A cloud card's context figure can lag the session: one was seen unchanged
+  for 20 minutes after a `/clear`. The API gives no time for it, so the card
+  dates it by the poll that first saw it, as in `141k / 1.00M · as of 19:24`.
+  `as of ≤19:24` means it may be older than that, as it always is just after
+  the collector starts.
 
 ## A machine that can't reach the collector
 

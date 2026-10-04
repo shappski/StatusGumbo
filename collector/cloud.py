@@ -282,7 +282,7 @@ def _routine_sessions(headers, now, skip, archived, get):
         if session_id in skip or session_id in archived or now - fired > LOOKBACK_SECS:
             continue
         query = urllib.parse.urlencode({"trigger_id": trigger_id, "limit": PAGE_SIZE})
-        _, data = _get_page(get, API_URL + "?" + query, headers, "session")
+        runs, data = _get_page(get, API_URL + "?" + query, headers, "session")
         for raw in data:
             if isinstance(raw, dict) and raw.get("id") == session_id:
                 if raw.get("status") == "archived":
@@ -292,6 +292,14 @@ def _routine_sessions(headers, now, skip, archived, get):
                     if parsed is not None:
                         sessions.append(parsed)
                 break
+        else:
+            # Neither this filter's paging nor its ordering is known, and a
+            # run that has only just fired may not be listed yet. Whichever
+            # it is, the card is missing, so that is said.
+            if runs.get("has_more") is True or runs.get("next_cursor"):
+                problems.append("a routine's session is past its trigger's first page of runs")
+            else:
+                problems.append("a routine's session is not in its trigger's runs")
     return sessions, list(dict.fromkeys(problems))
 
 

@@ -184,12 +184,13 @@ class RoutineApi:
     """Answers the session list, the trigger list and per-trigger lists by URL."""
 
     def __init__(self, listed=(), triggers=(), by_trigger=None, trigger_status=200,
-                 trigger_page=None):
+                 trigger_page=None, runs_page=None):
         self.listed = list(listed)
         self.triggers = list(triggers)
         self.by_trigger = by_trigger or {}
         self.trigger_status = trigger_status
         self.trigger_page = trigger_page or {"has_more": False}
+        self.runs_page = runs_page or {}
         self.calls = []
 
     def __call__(self, url, headers):
@@ -201,7 +202,8 @@ class RoutineApi:
                 return self.trigger_status, b"{}"
             return 200, json.dumps(dict(self.trigger_page, data=self.triggers)).encode()
         if "trigger_id" in query:
-            return 200, json.dumps({"data": self.by_trigger.get(query["trigger_id"][0], [])}).encode()
+            data = self.by_trigger.get(query["trigger_id"][0], [])
+            return 200, json.dumps(dict(self.runs_page, data=data)).encode()
         return 200, json.dumps({"data": self.listed, "next_cursor": None}).encode()
 
     def trigger_lookups(self):
@@ -283,6 +285,24 @@ class TestRoutineSessions(unittest.TestCase):
             self.assertEqual(state, "ok")
             self.assertEqual([s["id"] for s in sessions], ["cse_routine"])
             # Said once, however many triggers it hit.
+            self.assertEqual(routine, "routine sessions incomplete: " + problem)
+
+    def test_a_run_missing_from_its_triggers_list_is_said(self):
+        cases = [
+            ({}, "a routine's session is not in its trigger's runs"),
+            ({"has_more": True}, "a routine's session is past its trigger's first page of runs"),
+            ({"next_cursor": "c1"}, "a routine's session is past its trigger's first page of runs"),
+        ]
+        for page, problem in cases:
+            api = RoutineApi(
+                triggers=[raw_trigger()],
+                by_trigger={"trig_1": [raw_session(id="cse_older")]},
+                runs_page=page,
+            )
+            with unittest.mock.patch("sys.stderr"):
+                sessions, state, routine = fetch_sessions("tok", "org", NOW, api)
+            self.assertEqual(state, "ok")
+            self.assertEqual(sessions, [])
             self.assertEqual(routine, "routine sessions incomplete: " + problem)
 
     def test_a_session_already_listed_is_not_looked_up_or_doubled(self):

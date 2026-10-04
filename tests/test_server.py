@@ -791,6 +791,16 @@ class TestMainAsAContainerRunsIt(unittest.TestCase):
         _, url = self.start("--cloud")
         self.assertIsNotNone(self.sessions(url)["cloud"])
 
+    def test_cloud_says_at_startup_what_it_does_with_the_login(self):
+        process, _ = self.start("--cloud")
+        process.kill()
+        self.assertIn("login token", process.communicate()[1].decode())
+
+    def test_no_warning_without_cloud(self):
+        process, _ = self.start()
+        process.kill()
+        self.assertNotIn("login token", process.communicate()[1].decode())
+
     def test_no_cloud_is_still_accepted(self):
         # Existing units and the Dockerfile pass it.
         _, url = self.start("--no-cloud")

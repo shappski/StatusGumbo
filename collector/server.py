@@ -800,6 +800,12 @@ def main(argv=None):
         store = SessionStore(local_host=local_host_name(), local_place=local_place())
     cloud = None
     if args.cloud:
+        print(
+            "warning: --cloud sends your Claude Code login token to an "
+            "undocumented Anthropic endpoint; it is unofficial and may break "
+            "or be disallowed (see README, Cloud sessions)",
+            file=sys.stderr,
+        )
         cloud = CloudPoller()
         threading.Thread(target=cloud.run_forever, daemon=True).start()
 

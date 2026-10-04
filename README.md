@@ -18,6 +18,10 @@ hands to the status line.
   appended to it, never a replacement.
 - **Honest.** A machine that goes quiet reads `not reporting · last tick 14:02`,
   never "no sessions". Stale numbers are withheld, not shown.
+- **One opt-in extra you should read about first.** `--cloud` also lists your
+  claude.ai cloud sessions, by sending your Claude Code login token to an
+  undocumented Anthropic endpoint. It is off by default, unofficial, and
+  [explained below](#cloud-sessions).
 
 How it works, and why: [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -69,7 +73,7 @@ the reporter up when it restarts.
 | `--allow-host NAME` | `STATUSGUMBO_ALLOW_HOSTS` (comma-separated) | Another name you reach the collector by, when it has no token ([below](#token-and-where-it-listens)). |
 | `--tls-cert PEM`, `--tls-key PEM` | `STATUSGUMBO_TLS_CERT`, `STATUSGUMBO_TLS_KEY` | Serve HTTPS. The reporters' machines must trust the certificate (a public CA, or `tailscale cert`). |
 | `--behind-tls-proxy` | `STATUSGUMBO_BEHIND_TLS_PROXY=1` | HTTPS is handled in front of the collector; silences the plain-HTTP warning. |
-| `--cloud` | | Also show this account's cloud sessions ([below](#cloud-sessions)). Off by default. |
+| `--cloud` | | Also show this account's cloud sessions. **Off by default; unofficial; uses your Claude Code login token. Read [Cloud sessions](#cloud-sessions) first.** |
 | `--no-local-host` | | Don't list the collector's own machine. The Docker image sets this. |
 | | `STATUSGUMBO_HOST`, `STATUSGUMBO_PLACE` | The collector's own machine's name and place, when it also runs Claude Code. |
 
@@ -257,6 +261,19 @@ Remote Control has no claude.ai page, so its card has no link.
 
 ## Cloud sessions
 
+> **Read this before using `--cloud`.** It is unofficial and entirely at your
+> own risk.
+>
+> - It takes the OAuth access token Claude Code keeps in
+>   `~/.claude/.credentials.json` and sends it to Anthropic's API, as Claude
+>   Code does, from a program that isn't Claude Code.
+> - The endpoints it calls are undocumented. Anthropic may change or remove
+>   them, or decide this use isn't allowed, at any time and without notice.
+> - This project is not affiliated with or endorsed by Anthropic. Check
+>   Anthropic's current terms yourself before you turn it on.
+> - Nothing else in StatusGumbo touches your login. Without `--cloud`, none of
+>   this applies.
+
 Sessions on claude.ai/code have no status line of ours. With `--cloud`, the
 collector polls `GET https://api.anthropic.com/v1/code/sessions` once a minute,
 using the claude.ai login that Claude Code keeps on the collector's machine
@@ -266,7 +283,8 @@ repo, branch, context and model.
 Sessions started by a routine, which that list leaves out, are found through
 `GET /v1/code/triggers` and shown the same way.
 
-**It is off by default, and unofficial.**
+**It is off by default, and unofficial.** The collector also prints a warning
+to stderr each time it starts with `--cloud`.
 
 - The endpoint is undocumented. It's what Claude Code itself calls, and it can
   change without notice. When it does, the section shows the error rather than

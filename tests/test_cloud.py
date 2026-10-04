@@ -10,6 +10,8 @@ from collector.cloud import (
     LOOKBACK_SECS,
     MAX_AGE_SECS,
     MAX_BACKOFF_SECS,
+    MAX_PAGES,
+    PAGE_SIZE,
     POLL_SECS,
     QUIET_RECHECK_SECS,
     ApiError,
@@ -118,7 +120,7 @@ class FakeApi:
         self.headers = headers
         if self.status != 200:
             return self.status, b"{}"
-        if url.endswith("/triggers"):
+        if "/triggers?" in url:
             return 200, b'{"data": [], "has_more": false}'
         self.urls.append(url)
         return 200, json.dumps(self.pages.pop(0)).encode()
@@ -186,9 +188,11 @@ class RoutineApi:
     """Answers the session list, the trigger list and per-trigger lists by URL."""
 
     def __init__(self, listed=(), triggers=(), by_trigger=None, trigger_status=200,
-                 trigger_page=None, runs_page=None):
+                 trigger_page=None, runs_page=None, trigger_pages=None):
         self.listed = list(listed)
         self.triggers = list(triggers)
+        # cursor (None for the first page) -> (triggers, next_cursor)
+        self.trigger_pages = trigger_pages
         self.by_trigger = by_trigger or {}
         self.trigger_status = trigger_status
         self.trigger_page = trigger_page or {"has_more": False}
@@ -202,6 +206,10 @@ class RoutineApi:
         if parts.path.endswith("/triggers"):
             if self.trigger_status != 200:
                 return self.trigger_status, b"{}"
+            if self.trigger_pages is not None:
+                triggers, cursor = self.trigger_pages[query.get("cursor", [None])[0]]
+                page = {"data": triggers, "has_more": cursor is not None, "next_cursor": cursor}
+                return 200, json.dumps(page).encode()
             return 200, json.dumps(dict(self.trigger_page, data=self.triggers)).encode()
         if "trigger_id" in query:
             data = self.by_trigger.get(query["trigger_id"][0], [])
@@ -230,7 +238,7 @@ class TestRoutineSessions(unittest.TestCase):
     def test_the_trigger_list_is_asked_for_with_its_beta_header(self):
         api = RoutineApi(triggers=[])
         fetch_sessions("tok", "org", NOW, api)
-        trigger_calls = [h for url, h in api.calls if url.endswith("/triggers")]
+        trigger_calls = [h for url, h in api.calls if "/triggers?" in url]
         self.assertEqual(len(trigger_calls), 1)
         self.assertEqual(trigger_calls[0]["anthropic-beta"], "ccr-triggers-2026-01-30")
         self.assertEqual(trigger_calls[0]["Authorization"], "Bearer tok")
@@ -375,21 +383,53 @@ class TestRoutineSessions(unittest.TestCase):
         self.assertEqual([s["id"] for s in sessions], ["cse_01abc"])
         self.assertEqual(routine, "routine sessions unknown: HTTP 404")
 
-    def test_a_second_trigger_page_is_said_not_guessed_at(self):
+    def test_the_trigger_list_is_paged_by_its_cursor(self):
         # Every one-off launch leaves a trigger behind, so the list only
-        # grows. Its cursor field has never been observed; rather than
-        # guess, the first page is shown and the rest declared missing.
-        for page in ({"has_more": True}, {"next_cursor": "c1"}):
-            api = RoutineApi(
-                triggers=[raw_trigger()],
-                by_trigger={"trig_1": [raw_session(id="cse_routine")]},
-                trigger_page=page,
-            )
-            with unittest.mock.patch("sys.stderr"):
-                sessions, state, routine = fetch_sessions("tok", "org", NOW, api)
-            self.assertEqual(state, "ok")
-            self.assertEqual([s["id"] for s in sessions], ["cse_routine"])
-            self.assertEqual(routine, "routine sessions incomplete: trigger list has more pages")
+        # grows. Observed 2026-10-04: 20 a page by default, has_more and a
+        # next_cursor, and ?cursor= returning the rest with no overlap.
+        api = RoutineApi(
+            trigger_pages={
+                None: ([raw_trigger("trig_1")], "c1"),
+                "c1": ([raw_trigger("trig_2", "cse_routine2")], None),
+            },
+            by_trigger={
+                "trig_1": [raw_session(id="cse_routine")],
+                "trig_2": [raw_session(id="cse_routine2")],
+            },
+        )
+        sessions, state, routine = fetch_sessions("tok", "org", NOW, api)
+        self.assertEqual(state, "ok")
+        self.assertEqual(sorted(s["id"] for s in sessions), ["cse_routine", "cse_routine2"])
+        self.assertIsNone(routine)
+        pages = [urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+                 for url, _ in api.calls if urllib.parse.urlsplit(url).path.endswith("/triggers")]
+        self.assertEqual(pages, [
+            {"limit": [str(PAGE_SIZE)]},
+            {"limit": [str(PAGE_SIZE)], "cursor": ["c1"]},
+        ])
+
+    def test_a_trigger_cursor_that_never_ends_stops_and_is_said(self):
+        pages = {None: ([raw_trigger()], "c1")}
+        for n in range(1, MAX_PAGES + 1):
+            pages["c%d" % n] = ([], "c%d" % (n + 1))
+        api = RoutineApi(trigger_pages=pages, by_trigger={"trig_1": [raw_session(id="cse_routine")]})
+        with unittest.mock.patch("sys.stderr"):
+            sessions, state, routine = fetch_sessions("tok", "org", NOW, api)
+        self.assertEqual([s["id"] for s in sessions], ["cse_routine"])
+        self.assertEqual(routine, "routine sessions incomplete: trigger list has more pages")
+        self.assertEqual(len([u for u, _ in api.calls if "/triggers" in u]), MAX_PAGES)
+
+    def test_has_more_without_a_cursor_is_said(self):
+        # Nothing to ask for the rest with, so it is missing, and said.
+        api = RoutineApi(
+            triggers=[raw_trigger()],
+            by_trigger={"trig_1": [raw_session(id="cse_routine")]},
+            trigger_page={"has_more": True},
+        )
+        with unittest.mock.patch("sys.stderr"):
+            sessions, state, routine = fetch_sessions("tok", "org", NOW, api)
+        self.assertEqual([s["id"] for s in sessions], ["cse_routine"])
+        self.assertEqual(routine, "routine sessions incomplete: trigger list has more pages")
 
     def test_a_401_from_the_trigger_list_is_not_a_lapsed_login(self):
         # The plain list accepted the same token a moment earlier.
@@ -402,7 +442,7 @@ class TestRoutineSessions(unittest.TestCase):
 
     def test_a_trigger_list_without_a_list_is_an_error(self):
         def api(url, headers):
-            if url.endswith("/triggers"):
+            if "/triggers?" in url:
                 return 200, b'{"triggers": []}'
             return 200, b'{"data": []}'
         with unittest.mock.patch("sys.stderr"):

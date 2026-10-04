@@ -41,8 +41,8 @@ from collector.store import _dig
 from collector.usage import _is_number
 
 API_URL = "https://api.anthropic.com/v1/code/sessions"
-POLL_SECS = 60               # One poll a minute: 1-3 list pages, the trigger
-                             # list, and a lookup per routine session that may
+POLL_SECS = 60               # One poll a minute: 1-3 list pages, 1-3 trigger
+                             # list pages, and a lookup per routine session that may
                              # be shown. The phone refreshes every
                              # 5s, but a cloud session's state is not a 5s
                              # figure, and this is somebody else's API.
@@ -272,12 +272,25 @@ def _routine_sessions(headers, now, skip, archived, quiet, get):
     session may be missing while the rest were found, said once however
     many triggers it hit.
     """
-    page, triggers = _get_page(get, TRIGGERS_URL, dict(headers, **{"anthropic-beta": TRIGGERS_BETA}), "trigger")
+    beta = dict(headers, **{"anthropic-beta": TRIGGERS_BETA})
     sessions = []
     problems = []
-    # The page carries has_more, but the cursor this endpoint expects has
-    # never been seen, so a second page is said rather than guessed at.
-    if page.get("has_more") is True or page.get("next_cursor"):
+    triggers = []
+    cursor = None
+    # Paged like the plain list (observed 2026-10-04: limit and cursor both
+    # honoured). Its order is not known to be by firing, so there is no
+    # early stop; MAX_PAGES guards against a cursor that never ends, and
+    # whatever is left past it, or past a has_more with no cursor, is said.
+    for _ in range(MAX_PAGES):
+        query = {"limit": PAGE_SIZE}
+        if cursor:
+            query["cursor"] = cursor
+        page, data = _get_page(get, TRIGGERS_URL + "?" + urllib.parse.urlencode(query), beta, "trigger")
+        triggers.extend(data)
+        cursor = page.get("next_cursor")
+        if not cursor:
+            break
+    if cursor or page.get("has_more") is True and not page.get("next_cursor"):
         problems.append("trigger list has more pages")
     for trigger in triggers:
         if not isinstance(trigger, dict):

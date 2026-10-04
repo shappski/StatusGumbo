@@ -41,7 +41,9 @@ from collector.store import _dig
 from collector.usage import _is_number
 
 API_URL = "https://api.anthropic.com/v1/code/sessions"
-POLL_SECS = 60               # One list call a minute. The phone refreshes every
+POLL_SECS = 60               # One poll a minute: 1-3 list pages, the trigger
+                             # list, and a lookup per routine session that may
+                             # be shown. The phone refreshes every
                              # 5s, but a cloud session's state is not a 5s
                              # figure, and this is somebody else's API.
 MAX_BACKOFF_SECS = 10 * 60   # Ceiling for the doubling after a failure or 429.
@@ -78,6 +80,12 @@ FIRED_LOOKBACK_SECS = 60 * 24 * 3600
                              # before it fired, but can long after, so this is
                              # wider: it only spares a lookup per trigger that
                              # ever ran, which would otherwise grow for good.
+QUIET_RECHECK_SECS = 15 * 60
+                             # A routine session found quiet past LOOKBACK_SECS
+                             # is not shown, and is asked for again only this
+                             # often: a completed run nobody archived would
+                             # otherwise cost a lookup a minute for 60 days.
+                             # A resumed one reappears within this long.
 
 
 def credentials_path():
@@ -252,11 +260,13 @@ def _get_page(get, url, headers, noun):
     return page, data
 
 
-def _routine_sessions(headers, now, skip, archived, get):
+def _routine_sessions(headers, now, skip, archived, quiet, get):
     """Shown sessions started by a routine, from each trigger's last run.
 
     Sessions in `skip` or `archived` are not asked for; an archived one
-    found here is added to `archived`, since archiving is for good.
+    found here is added to `archived`, since archiving is for good. `quiet`
+    maps a session found too quiet to show to when that was found, and it is
+    not asked for again until QUIET_RECHECK_SECS later.
 
     Returns (sessions, problems): each problem is a reason some routine
     session may be missing while the rest were found, said once however
@@ -287,6 +297,8 @@ def _routine_sessions(headers, now, skip, archived, get):
             continue
         if session_id in skip or session_id in archived or now - fired > FIRED_LOOKBACK_SECS:
             continue
+        if now - quiet.get(session_id, now - QUIET_RECHECK_SECS) < QUIET_RECHECK_SECS:
+            continue
         query = urllib.parse.urlencode({"trigger_id": trigger_id, "limit": PAGE_SIZE})
         runs, data = _get_page(get, API_URL + "?" + query, headers, "session")
         for raw in data:
@@ -296,7 +308,10 @@ def _routine_sessions(headers, now, skip, archived, get):
                 else:
                     parsed = parse_session(raw)
                     last = parsed and parsed["last_event_at"]
-                    if parsed is not None and (last is None or now - last <= LOOKBACK_SECS):
+                    if last is not None and now - last > LOOKBACK_SECS:
+                        quiet[session_id] = now
+                    elif parsed is not None:
+                        quiet.pop(session_id, None)
                         sessions.append(parsed)
                 break
         else:
@@ -310,7 +325,7 @@ def _routine_sessions(headers, now, skip, archived, get):
     return sessions, list(dict.fromkeys(problems))
 
 
-def fetch_sessions(token, org, now, get=http_get, archived=None):
+def fetch_sessions(token, org, now, get=http_get, archived=None, quiet=None):
     """Every shown cloud session, or raises. Returns (sessions, state,
     routine_detail).
 
@@ -325,6 +340,8 @@ def fetch_sessions(token, org, now, get=http_get, archived=None):
 
     `archived` is the caller's set of routine sessions already seen archived,
     kept across polls so they are not asked for again; it is added to here.
+    `quiet` is the caller's map of routine sessions found too quiet to show,
+    kept across polls in the same way.
     """
     headers = {
         "Authorization": "Bearer " + token,
@@ -333,6 +350,7 @@ def fetch_sessions(token, org, now, get=http_get, archived=None):
         "Accept": "application/json",
     }
     archived = set() if archived is None else archived
+    quiet = {} if quiet is None else quiet
     sessions = []
     cursor = None
     try:
@@ -352,7 +370,7 @@ def fetch_sessions(token, org, now, get=http_get, archived=None):
         listed = {s["id"] for s in sessions}
         routine_detail = None
         try:
-            routine, problems = _routine_sessions(headers, now, listed, archived, get)
+            routine, problems = _routine_sessions(headers, now, listed, archived, quiet, get)
             sessions.extend(routine)
             if problems:
                 print("cloud poll: routines: %s" % "; ".join(problems), file=sys.stderr)
@@ -402,13 +420,15 @@ class CloudPoller:
         self.failures = 0
         self._archived = set()   # routine sessions seen archived; poll thread only
         self._ctx_seen = {}      # id -> (used_tokens, as_of, exact); poll thread only
+        self._quiet = {}         # routine sessions seen too quiet; poll thread only
 
     def poll_once(self):
         """One poll. Returns the seconds to wait before the next."""
         now = self._clock()
         try:
             token, org = self._login(now)
-            sessions, state, routine_detail = fetch_sessions(token, org, now, self._get, self._archived)
+            sessions, state, routine_detail = fetch_sessions(
+                token, org, now, self._get, self._archived, self._quiet)
         except LoginUnavailable as err:
             sessions, state, detail = None, err.state, err.detail
         except ApiError as err:

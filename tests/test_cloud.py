@@ -11,6 +11,7 @@ from collector.cloud import (
     MAX_AGE_SECS,
     MAX_BACKOFF_SECS,
     POLL_SECS,
+    QUIET_RECHECK_SECS,
     ApiError,
     CloudPoller,
     LoginUnavailable,
@@ -278,6 +279,24 @@ class TestRoutineSessions(unittest.TestCase):
         sessions, _, routine = fetch_sessions("tok", "org", NOW, api)
         self.assertEqual(sessions, [])
         self.assertIsNone(routine)
+
+    def test_a_quiet_routine_session_is_asked_for_only_now_and_then(self):
+        quiet = {}
+        stale = iso(NOW - LOOKBACK_SECS - 60)
+        api = RoutineApi(
+            triggers=[raw_trigger()],
+            by_trigger={"trig_1": [raw_session(id="cse_routine", last_event_at=stale, updated_at=stale)]},
+        )
+        fetch_sessions("tok", "org", NOW, api, quiet=quiet)
+        fetch_sessions("tok", "org", NOW + 60, api, quiet=quiet)
+        self.assertEqual(len(api.trigger_lookups()), 1)
+        # Resumed: seen again once the recheck is due, and then every poll.
+        api.by_trigger["trig_1"] = [raw_session(id="cse_routine", last_event_at=iso(NOW + QUIET_RECHECK_SECS))]
+        sessions, _, _ = fetch_sessions("tok", "org", NOW + QUIET_RECHECK_SECS, api, quiet=quiet)
+        self.assertEqual([s["id"] for s in sessions], ["cse_routine"])
+        self.assertEqual(quiet, {})
+        fetch_sessions("tok", "org", NOW + QUIET_RECHECK_SECS + 60, api, quiet=quiet)
+        self.assertEqual(len(api.trigger_lookups()), 3)
 
     def test_a_trigger_that_last_fired_before_the_fired_lookback_is_skipped(self):
         api = RoutineApi(triggers=[raw_trigger(fired=NOW - FIRED_LOOKBACK_SECS - 60)])

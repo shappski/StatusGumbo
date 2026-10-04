@@ -4,6 +4,10 @@ Usage: capture_post.py <port|/socket/path> <outfile> [<authfile>]
 Serves a single request, writes its body to outfile, exits 0. Exits 1 if no
 request arrives within 10 seconds. With authfile, also writes the request's
 Authorization header there (empty when it had none).
+
+Port 0 lets the kernel pick a free port, printed on stdout once listening. A
+fixed port in the ephemeral range can be held by any outgoing connection, and
+then the listener fails with EADDRINUSE and the test with it.
 """
 
 import socketserver
@@ -42,6 +46,8 @@ def main():
         server = UnixHTTPServer(where, Handler)
     else:
         server = HTTPServer(("127.0.0.1", int(where)), Handler)
+        if where == "0":
+            print(server.server_address[1], flush=True)
     server.timeout = 10
     server.handle_request()
     return 0

@@ -28,6 +28,18 @@ fails=0
 pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
 
+# The one-shot listener, on a port the kernel picks (see capture_post.py).
+# Sets capture_pid and PORT; returns once it is listening.
+start_capture() {
+    portfile=$(mktemp)
+    python3 "$ROOT/tests/helpers/capture_post.py" 0 "$@" > "$portfile" &
+    capture_pid=$!
+    i=0
+    while [ ! -s "$portfile" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    PORT=$(cat "$portfile")
+    rm -f "$portfile"
+}
+
 WORK=$(mktemp -d)
 cp "$(command -v sh)" "$WORK/claude"
 HOOK="$WORK/hook.json"
@@ -123,10 +135,8 @@ reset_state
 seed_stale_cache
 CAPTURE="$WORK/capture.json"
 : > "$CAPTURE"
-python3 "$ROOT/tests/helpers/capture_post.py" 49996 "$CAPTURE" &
-capture_pid=$!
-sleep 1
-URL='http://127.0.0.1:49996'
+start_capture "$CAPTURE"
+URL="http://127.0.0.1:$PORT"
 start_claude 10
 # used_percentage is in the cached tick and not in the hook's own input, so a
 # reporter that mistakes the hook JSON for a tick and posts it cannot pass.
@@ -168,10 +178,8 @@ reset_state
 mkdir -p "$STATUSGUMBO_STATE_DIR/sessions"
 cp "$PAYLOAD" "$CACHE"
 : > "$CAPTURE"
-python3 "$ROOT/tests/helpers/capture_post.py" 49995 "$CAPTURE" &
-capture_pid=$!
-sleep 1
-URL='http://127.0.0.1:49995'
+start_capture "$CAPTURE"
+URL="http://127.0.0.1:$PORT"
 start_claude 15
 # Precondition, or both checks below pass against a loop that never started.
 if within 20 'heartbeat_alive'; then
@@ -263,10 +271,8 @@ cp "$PAYLOAD" "$WORK/planted.json"
 touch -d '-1 minute' "$WORK/planted.json"
 ln -s "$WORK/planted.json" "$CACHE"
 : > "$CAPTURE"
-python3 "$ROOT/tests/helpers/capture_post.py" 49994 "$CAPTURE" &
-capture_pid=$!
-sleep 1
-URL='http://127.0.0.1:49994'
+start_capture "$CAPTURE"
+URL="http://127.0.0.1:$PORT"
 start_claude 4
 sleep 3
 if [ ! -s "$CAPTURE" ]; then

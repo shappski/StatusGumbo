@@ -34,6 +34,18 @@ trap 'rm -rf "$STATUSGUMBO_STATE_DIR" "$XDG_CONFIG_HOME"' EXIT
 pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
 
+# The one-shot listener, on a port the kernel picks (see capture_post.py).
+# Sets capture_pid and PORT; returns once it is listening.
+start_capture() {
+    portfile=$(mktemp)
+    python3 "$ROOT/tests/helpers/capture_post.py" 0 "$@" > "$portfile" &
+    capture_pid=$!
+    i=0
+    while [ ! -s "$portfile" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    PORT=$(cat "$portfile")
+    rm -f "$portfile"
+}
+
 printf 'report.sh\n'
 
 # 0. Guard. Without this, a missing report.sh passes four of the tests below
@@ -116,10 +128,8 @@ unset STATUSGUMBO_URL
 #    the test that pins report.sh to the forked reporter it replaces: same
 #    keys, same payload, passed through untouched.
 CAPTURE=$(mktemp)
-python3 "$ROOT/tests/helpers/capture_post.py" 49997 "$CAPTURE" &
-capture_pid=$!
-sleep 1
-STATUSGUMBO_URL='http://127.0.0.1:49997'
+start_capture "$CAPTURE"
+STATUSGUMBO_URL="http://127.0.0.1:$PORT"
 STATUSGUMBO_HOST='test-host'
 export STATUSGUMBO_URL STATUSGUMBO_HOST
 sh "$SCRIPT" < "$PAYLOAD" >/dev/null 2>&1
@@ -143,11 +153,9 @@ unset STATUSGUMBO_URL STATUSGUMBO_HOST
 #     no label rather than a guessed one.
 where_of() {
     CAPTURE=$(mktemp)
-    python3 "$ROOT/tests/helpers/capture_post.py" 49997 "$CAPTURE" &
-    capture_pid=$!
-    sleep 1
+    start_capture "$CAPTURE"
     env -u CODER -u CODER_WORKSPACE_NAME -u STATUSGUMBO_PLACE XDG_CONFIG_HOME="${PLACECFG:-/nonexistent}" "$@" \
-        STATUSGUMBO_URL='http://127.0.0.1:49997' sh "$SCRIPT" < "$PAYLOAD" >/dev/null 2>&1
+        STATUSGUMBO_URL="http://127.0.0.1:$PORT" sh "$SCRIPT" < "$PAYLOAD" >/dev/null 2>&1
     wait "$capture_pid" 2>/dev/null || true
     jq -r 'if has("where") then .where else "<absent>" end' < "$CAPTURE" 2>/dev/null || echo '<empty>'
     rm -f "$CAPTURE"
@@ -190,11 +198,9 @@ else fail "a place that is not one plain word is not sent (got $got)"; fi
 #     out.
 bridge_of() {
     CAPTURE=$(mktemp)
-    python3 "$ROOT/tests/helpers/capture_post.py" 49997 "$CAPTURE" &
-    capture_pid=$!
-    sleep 1
+    start_capture "$CAPTURE"
     jq -c --arg t "$1" '.transcript_path = $t' < "$PAYLOAD" \
-        | STATUSGUMBO_URL='http://127.0.0.1:49997' sh "$SCRIPT" >/dev/null 2>&1
+        | STATUSGUMBO_URL="http://127.0.0.1:$PORT" sh "$SCRIPT" >/dev/null 2>&1
     wait "$capture_pid" 2>/dev/null || true
     jq -r 'if has("bridge") then .bridge else "<absent>" end' < "$CAPTURE" 2>/dev/null || echo '<empty>'
     rm -f "$CAPTURE"
@@ -233,11 +239,9 @@ rm -f "$TRANSCRIPT"
 auth_of() {
     CAPTURE=$(mktemp)
     AUTH=$(mktemp)
-    python3 "$ROOT/tests/helpers/capture_post.py" 49997 "$CAPTURE" "$AUTH" &
-    capture_pid=$!
-    sleep 1
+    start_capture "$CAPTURE" "$AUTH"
     env -u STATUSGUMBO_TOKEN -u STATUSGUMBO_TOKEN_FILE XDG_CONFIG_HOME="$CFG" "$@" \
-        STATUSGUMBO_URL='http://127.0.0.1:49997' sh "$SCRIPT" < "$PAYLOAD" >/dev/null 2>&1
+        STATUSGUMBO_URL="http://127.0.0.1:$PORT" sh "$SCRIPT" < "$PAYLOAD" >/dev/null 2>&1
     wait "$capture_pid" 2>/dev/null || true
     if [ -s "$CAPTURE" ]; then cat "$AUTH"; else printf '<no post>'; fi
     rm -f "$CAPTURE" "$AUTH"
@@ -271,11 +275,12 @@ rm -rf "$CFG"
 #     collector that isn't on this machine's loopback needs its URL to reach
 #     every session. The environment still wins, so the existing hooks, which
 #     pass the loopback default inline, behave exactly as before.
+# @PORT@, in the url file or an argument, becomes the listener's port.
 url_post() {
     CAPTURE=$(mktemp)
-    python3 "$ROOT/tests/helpers/capture_post.py" 49996 "$CAPTURE" /dev/null &
-    capture_pid=$!
-    sleep 1
+    start_capture "$CAPTURE" /dev/null
+    if [ -f "$CFG/url.in" ]; then sed "s/@PORT@/$PORT/g" "$CFG/url.in" > "$CFG/statusgumbo/url"; fi
+    for arg; do shift; set -- "$@" "$(printf '%s' "$arg" | sed "s/@PORT@/$PORT/g")"; done
     env -u STATUSGUMBO_URL XDG_CONFIG_HOME="$CFG" "$@" sh "$SCRIPT" < "$PAYLOAD" >/dev/null 2>&1
     sleep 2; kill "$capture_pid" 2>/dev/null || true; wait "$capture_pid" 2>/dev/null || true
     if [ -s "$CAPTURE" ]; then printf 'posted'; else printf 'nothing'; fi
@@ -283,18 +288,19 @@ url_post() {
 }
 CFG=$(mktemp -d)
 mkdir -p "$CFG/statusgumbo"
-printf 'http://127.0.0.1:49996/\n' > "$CFG/statusgumbo/url"
+printf 'http://127.0.0.1:@PORT@/\n' > "$CFG/url.in"
 got=$(url_post)
 if [ "$got" = posted ]; then pass 'the url file is read when STATUSGUMBO_URL is unset'
 else fail "the url file is read when STATUSGUMBO_URL is unset (got $got)"; fi
 got=$(url_post STATUSGUMBO_URL=http://127.0.0.1:1)
 if [ "$got" = nothing ]; then pass 'STATUSGUMBO_URL wins over the url file'
 else fail "STATUSGUMBO_URL wins over the url file (got $got)"; fi
+rm -f "$CFG/url.in"
 printf 'file:///etc/passwd\n' > "$CFG/statusgumbo/url"
 out=$(env -u STATUSGUMBO_URL XDG_CONFIG_HOME="$CFG" sh "$SCRIPT" < "$PAYLOAD" 2>&1); rc=$?
 if [ -z "$out" ] && [ "$rc" -eq 0 ]; then pass 'a url file that is not http(s) is ignored, silently'
 else fail "a url file that is not http(s) is ignored, silently (rc=$rc out=$out)"; fi
-for bad in 'ftp://127.0.0.1:49996' '-K/etc/passwd' 'http://127.0.0.1:49996 -v'; do
+for bad in 'ftp://127.0.0.1:@PORT@' '-K/etc/passwd' 'http://127.0.0.1:@PORT@ -v'; do
     got=$(url_post STATUSGUMBO_URL="$bad")
     if [ "$got" = nothing ]; then pass "a STATUSGUMBO_URL of '$bad' is not used"
     else fail "a STATUSGUMBO_URL of '$bad' is not used (got $got)"; fi

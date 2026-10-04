@@ -13,6 +13,12 @@ field here is read defensively and a response that stops making sense turns
 the section into an error line, never into an empty list that reads as "no
 cloud sessions".
 
+Sessions a routine started are missing from that list, so they come from two
+more undocumented calls, found in the 2.1.288 binary and verified live on
+2026-10-03: `GET /v1/code/triggers`, which answers only with the
+`anthropic-beta: ccr-triggers-2026-01-30` header, and
+`GET /v1/code/sessions?trigger_id=…`. Neither's paging or ordering is known.
+
 Authentication is the claude.ai login Claude Code already keeps on disk. It
 is read, never written: when Claude Code's access token expires the section
 says so and waits for Claude Code to refresh it, rather than this process

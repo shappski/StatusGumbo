@@ -58,6 +58,7 @@ MAX_AGE_SECS = 5 * 60        # The same rule as RATE_LIMITS_MAX_AGE_SECS: past
                              # as though it were current.
 EXPIRED_TEXT = "login expired — any local claude session refreshes it"
 ROUTINE_UNKNOWN_TEXT = "routine sessions unknown: %s"
+ROUTINE_INCOMPLETE_TEXT = "routine sessions incomplete: %s"
 CLOUD_KIND = "anthropic_cloud"
                              # The list also carries every Remote Control
                              # ("bridge") session, including local ones this
@@ -250,9 +251,18 @@ def _routine_sessions(headers, now, skip, archived, get):
 
     Sessions in `skip` or `archived` are not asked for; an archived one
     found here is added to `archived`, since archiving is for good.
+
+    Returns (sessions, problems): each problem is a reason some routine
+    session may be missing while the rest were found, said once however
+    many triggers it hit.
     """
-    _, triggers = _get_page(get, TRIGGERS_URL, dict(headers, **{"anthropic-beta": TRIGGERS_BETA}), "trigger")
+    page, triggers = _get_page(get, TRIGGERS_URL, dict(headers, **{"anthropic-beta": TRIGGERS_BETA}), "trigger")
     sessions = []
+    problems = []
+    # The page carries has_more, but the cursor this endpoint expects has
+    # never been seen, so a second page is said rather than guessed at.
+    if page.get("has_more") is True or page.get("next_cursor"):
+        problems.append("trigger list has more pages")
     for trigger in triggers:
         if not isinstance(trigger, dict):
             continue
@@ -274,7 +284,7 @@ def _routine_sessions(headers, now, skip, archived, get):
                     if parsed is not None:
                         sessions.append(parsed)
                 break
-    return sessions
+    return sessions, list(dict.fromkeys(problems))
 
 
 def fetch_sessions(token, org, now, get=http_get, archived=None):
@@ -319,7 +329,11 @@ def fetch_sessions(token, org, now, get=http_get, archived=None):
         listed = {s["id"] for s in sessions}
         routine_detail = None
         try:
-            sessions.extend(_routine_sessions(headers, now, listed, archived, get))
+            routine, problems = _routine_sessions(headers, now, listed, archived, get)
+            sessions.extend(routine)
+            if problems:
+                print("cloud poll: routines: %s" % "; ".join(problems), file=sys.stderr)
+                routine_detail = ROUTINE_INCOMPLETE_TEXT % "; ".join(problems)
         except _Expired:
             # The plain list just took this token, so a 401 here is the beta
             # or its scope refused, not a lapsed login: saying "login

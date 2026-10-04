@@ -183,11 +183,13 @@ def raw_trigger(trigger_id="trig_1", session_id="cse_routine", fired=NOW - 600):
 class RoutineApi:
     """Answers the session list, the trigger list and per-trigger lists by URL."""
 
-    def __init__(self, listed=(), triggers=(), by_trigger=None, trigger_status=200):
+    def __init__(self, listed=(), triggers=(), by_trigger=None, trigger_status=200,
+                 trigger_page=None):
         self.listed = list(listed)
         self.triggers = list(triggers)
         self.by_trigger = by_trigger or {}
         self.trigger_status = trigger_status
+        self.trigger_page = trigger_page or {"has_more": False}
         self.calls = []
 
     def __call__(self, url, headers):
@@ -197,7 +199,7 @@ class RoutineApi:
         if parts.path.endswith("/triggers"):
             if self.trigger_status != 200:
                 return self.trigger_status, b"{}"
-            return 200, json.dumps({"data": self.triggers, "has_more": False}).encode()
+            return 200, json.dumps(dict(self.trigger_page, data=self.triggers)).encode()
         if "trigger_id" in query:
             return 200, json.dumps({"data": self.by_trigger.get(query["trigger_id"][0], [])}).encode()
         return 200, json.dumps({"data": self.listed, "next_cursor": None}).encode()
@@ -291,6 +293,22 @@ class TestRoutineSessions(unittest.TestCase):
         self.assertEqual(state, "ok")
         self.assertEqual([s["id"] for s in sessions], ["cse_01abc"])
         self.assertEqual(routine, "routine sessions unknown: HTTP 404")
+
+    def test_a_second_trigger_page_is_said_not_guessed_at(self):
+        # Every one-off launch leaves a trigger behind, so the list only
+        # grows. Its cursor field has never been observed; rather than
+        # guess, the first page is shown and the rest declared missing.
+        for page in ({"has_more": True}, {"next_cursor": "c1"}):
+            api = RoutineApi(
+                triggers=[raw_trigger()],
+                by_trigger={"trig_1": [raw_session(id="cse_routine")]},
+                trigger_page=page,
+            )
+            with unittest.mock.patch("sys.stderr"):
+                sessions, state, routine = fetch_sessions("tok", "org", NOW, api)
+            self.assertEqual(state, "ok")
+            self.assertEqual([s["id"] for s in sessions], ["cse_routine"])
+            self.assertEqual(routine, "routine sessions incomplete: trigger list has more pages")
 
     def test_a_401_from_the_trigger_list_is_not_a_lapsed_login(self):
         # The plain list accepted the same token a moment earlier.

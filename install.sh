@@ -70,7 +70,7 @@ if [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
 else
     printf '  no status line found at %s.\n' "$TARGET"
     printf '  This project does not ship one — install any status line you like\n'
-    printf '  (claude-statusline is the one these docs assume), then append the\n'
+    printf '  (StatusLineGumbo is the one these docs assume), then append the\n'
     printf '  hook from the README and re-run.\n\n'
 fi
 

@@ -106,10 +106,14 @@
      16px between cards, so the gap between two hosts is larger than the gap
      between two sessions — the grouping has to be visible in the spacing, not
      only in the words. */
+  /* 2026-10-10: was 12px in --dim over a --line rule, smaller and fainter
+     than the cards' own text, and hard to spot at a glance. A heading has to
+     outrank what it heads: larger than the 14px body, in --fg, over a rule
+     drawn in --edge, which every theme sets darker than --line. */
   .host {
-    font-size: 12px; font-weight: 700; color: var(--dim);
-    letter-spacing: 0.04em; margin: 20px 0 8px;
-    padding-bottom: 4px; border-bottom: 1px solid var(--line);
+    font-size: 16px; font-weight: 700; color: var(--fg);
+    letter-spacing: 0.02em; margin: 28px 0 10px;
+    padding-bottom: 5px; border-bottom: 2px solid var(--edge);
   }
   /* Where a card runs, on the card itself: on a phone the heading naming the
      machine is usually scrolled out of sight, and the edge is what is left

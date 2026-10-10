@@ -613,6 +613,11 @@ class TestARemoteControlCardOpensOnClaudeAi(unittest.TestCase):
         self.assertIn("'<a class=\"card' + cls + '\" href=\"' + esc(url)", body)
         self.assertIn("'<div class=\"card' + cls + '\">'", body)
 
+    def test_it_opens_in_a_new_tab(self):
+        # 2026-10-10: on the laptop, a click left the board for claude.ai.
+        # noopener so the claude.ai tab gets no handle back on this page.
+        self.assertIn("'\" target=\"_blank\" rel=\"noopener\">'", function_source("card"))
+
     def test_host_and_cloud_cards_both_go_through_it(self):
         self.assertIn("card(placeClass(place), s.url,", function_source("renderSession"))
         self.assertIn("card(' at-cloud', s.url,", function_source("renderCloudSession"))

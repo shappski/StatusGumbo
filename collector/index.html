@@ -734,9 +734,12 @@ function pinButton(key) {
 // A session that is also on claude.ai — cloud, or local with Remote Control
 // on — is one tap target, the whole card, not a title a thumb has to find.
 // The url is always one the collector built, never one a reporter sent.
+// A new tab, so the board stays open behind it on a laptop; on a phone the
+// claude.ai link still hands off to the app.
 function card(cls, url, inner) {
   return url
-    ? '<a class="card' + cls + '" href="' + esc(url) + '">' + inner + '</a>'
+    ? '<a class="card' + cls + '" href="' + esc(url)
+      + '" target="_blank" rel="noopener">' + inner + '</a>'
     : '<div class="card' + cls + '">' + inner + '</div>';
 }
 

@@ -143,22 +143,6 @@
   .pct { font-weight: 700; }
   .green { color: var(--green); } .yellow { color: var(--yellow); } .red { color: var(--red); }
   .alert { border-color: var(--red); color: var(--red); }
-  /* height is not decoration here, it is the missing half of a dimension.
-     The sparkline is emitted as width="100%" over a `0 0 240 28` viewBox with
-     preserveAspectRatio="none" and no height, so the browser fell back to the
-     viewBox's 240:28 ratio and scaled the height with the *viewport width* —
-     28px at the 240px it was drawn for, ~45px on a phone, ~180px on a laptop,
-     where it opened a void inside the card taller than the card's own
-     content. Pinning it to the viewBox's own height makes the vertical scale
-     1:1 and the card the same height on every screen; the horizontal stretch
-     is what preserveAspectRatio="none" is there for and is left alone. */
-  svg { display: block; height: 28px; }
-  /* The line and how much time it covers, on one row. min-width:0 is what
-     lets the svg actually shrink: a flex item's floor is its content size,
-     not zero, so without it the caption would be pushed off the card on a
-     narrow screen rather than the line giving up the width. */
-  .spark { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-  .spark > svg { flex: 1; min-width: 0; }
   .empty { color: var(--dim); text-align: center; padding: 24px 0; }
   /* A card that opens on claude.ai is a link, and must still look like a
      card rather than like link text. */
@@ -353,9 +337,9 @@ function toneColor(pct) {
 }
 
 // A length of time with no opinion about what it measures. Shared by `age`,
-// which is a time since, and by the sparkline's caption, which is a time
-// across — the same formatting problem, and formatting them differently
-// would be a difference the reader has to account for and cannot.
+// which is a time since, and by `opened`, which is a time across — the same
+// formatting problem, and formatting them differently would be a difference
+// the reader has to account for and cannot.
 function duration(secs) {
   if (num(secs) === null) return '';
   secs = Math.max(0, Math.round(secs));
@@ -439,80 +423,6 @@ function paceText(pace) {
   return 'on pace';
 }
 
-// The x-axis is the sample index, and the line is stretched to the card's
-// full width whatever the count — so two samples twenty seconds apart draw
-// exactly the same edge-to-edge line as a full thirty-minute ring. Nothing
-// in the picture distinguishes them, which is why one is withheld and the
-// other is captioned rather than left to be guessed at.
-//
-// Below this the line is not thin evidence, it is a shape with no trend in
-// it: at one sample per HISTORY_MIN_INTERVAL_SECS, two minutes is a dozen
-// readings, and fewer than that says only what the percentage above it
-// already says. The same judgement the budget card makes about a stale
-// figure — withhold rather than present something that cannot support the
-// reading it invites.
-const SPARKLINE_MIN_SPAN_SECS = 120;
-
-// The samples a line may be drawn from, or null if it may not be drawn.
-//
-// store.py declines to append a sample whose ctx_pct is null, so that half of
-// this filter is partly belt-and-braces. It is here because the coupling is
-// invisible from this file: an unguarded null or NaN plots at y = h, drawing
-// a confident 0% the collector never claimed. Number.isFinite rather than a
-// typeof test, because typeof NaN is 'number'. `t` is checked on the same
-// grounds — it is now arithmetic'd for the span, and a non-numeric one would
-// caption the line with a length that is not a length.
-function plottable(history) {
-  const samples = (history || []).filter(
-    sample => sample
-      && Number.isFinite(sample.ctx_pct)
-      && Number.isFinite(sample.t));
-  if (samples.length < 2) return null;
-  const span = samples[samples.length - 1].t - samples[0].t;
-  // `>=` written on the true branch: a NaN span fails every comparison, so
-  // asking `span < MIN` would have let it through to be captioned "NaNm".
-  if (!(span >= SPARKLINE_MIN_SPAN_SECS)) return null;
-
-  // A window in which the reading never changed is a horizontal line, and a
-  // horizontal line drawn edge to edge in the tone colour reads as a trend
-  // when it is the absence of one — it says exactly what the percentage
-  // above it already said, in a form that looks like it says more. Observed:
-  // two sessions holding 10% and 14% without moving for three quarters of an
-  // hour, both drawing a confident full-width stroke.
-  //
-  // So the line's presence is itself the signal. It appears when context is
-  // moving, which is the only time its shape carries anything the number
-  // does not. min/max by loop rather than Math.min(...values): the ring holds
-  // HISTORY_SLOTS samples and spreading an array of that size into arguments
-  // is a habit that breaks quietly once the ring is grown.
-  let lo = samples[0].ctx_pct, hi = lo;
-  for (const sample of samples) {
-    if (sample.ctx_pct < lo) lo = sample.ctx_pct;
-    if (sample.ctx_pct > hi) hi = sample.ctx_pct;
-  }
-  if (lo === hi) return null;
-
-  return { samples: samples, span: span };
-}
-
-function sparkline(plot) {
-  if (!plot) return '';
-  const samples = plot.samples;
-  const w = 240, h = 28;
-  const points = samples.map((sample, i) => {
-    const x = (i / (samples.length - 1)) * w;
-    const y = h - (Math.max(0, Math.min(100, sample.ctx_pct)) / 100) * h;
-    return x.toFixed(1) + ',' + y.toFixed(1);
-  }).join(' ');
-  const last = samples[samples.length - 1].ctx_pct;
-  // The caption rides beside the line rather than beneath it, so saying how
-  // much time the line covers costs the card no height at all.
-  return '<div class="spark">'
-       + '<svg width="100%" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">'
-       + '<polyline fill="none" stroke="' + toneColor(last) + '" stroke-width="1.5" '
-       + 'vector-effect="non-scaling-stroke" points="' + points + '"/></svg>'
-       + '<span class="meta">' + duration(plot.span) + '</span></div>';
-}
 
 function renderBudget(rateLimits, staleAsOf) {
   if (!rateLimits) {
@@ -770,7 +680,6 @@ function renderSession(s, place) {
     + '<div class="bar"><div style="width:' + width + '%;background:' + toneColor(pct) + '"></div></div>'
     + '<div class="row"><span class="pct ' + tone(pct) + '">' + pctText + '</span>'
     + '<span class="meta">' + tokens(s.ctx_used_tokens) + size + '</span></div>'
-    + sparkline(plottable(s.history))
     // The API still carries cost_usd; this line deliberately does not spend
     // it. On a Max plan no session is billed, so the figure was noise that
     // read as a bill at a glance — the one impression this page must not
@@ -980,7 +889,7 @@ function themeMenu() {
 }
 
 // Applied on selection, so there is never a staged choice to confirm or
-// lose. The bars and sparklines take their colour from the palette at render
+// lose. The bars take their colour from the palette at render
 // time, so the cards are drawn again with it.
 function chooseTheme(choice) {
   themeChoice = choice;

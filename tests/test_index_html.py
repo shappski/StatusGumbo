@@ -63,13 +63,13 @@ class TestFunctionSourceHelper(unittest.TestCase):
             function_source("noSuchFunction")
 
     def test_comments_are_stripped_so_no_assertion_matches_prose(self):
-        # plottable's comments name `typeof` precisely to explain why the
+        # renderSession's comments name cost_usd precisely to explain why the
         # code does not use it. Without stripping, that prose would defeat
         # the assertion that the code is free of it.
-        body = function_source("plottable")
+        body = function_source("renderSession")
         self.assertNotIn("//", body)
-        self.assertIn("Number.isFinite", body)
-        self.assertNotIn("typeof", body)
+        self.assertIn("esc(s.model)", body)
+        self.assertNotIn("cost_usd", body)
 
     def test_code_survives_the_stripping(self):
         self.assertIn("getPropertyValue", function_source("toneColor"))
@@ -183,9 +183,6 @@ class TestCardsReadAsSeparateBoxes(unittest.TestCase):
                 r"\.(?:meta|bar|row) \{[^}]*?margin[^:]*: ([\d ]+?)px", SOURCE
             )
         ]
-        internal += [
-            int(m) for m in re.findall(r"\.spark \{[^}]*?margin-top: (\d+)px", SOURCE)
-        ]
         self.assertTrue(internal, "found no internal gaps to compare against")
         self.assertGreaterEqual(gutter, 2 * max(internal))
 
@@ -213,22 +210,6 @@ class TestCardsReadAsSeparateBoxes(unittest.TestCase):
         # whoever reintroduces a state field.
         self.assertNotIn(".card.stale", SOURCE)
         self.assertNotIn("stale", function_source("renderSession"))
-
-    def test_the_sparkline_height_does_not_depend_on_the_viewport(self):
-        # The svg is emitted width="100%" with preserveAspectRatio="none" and
-        # no height, so without a CSS height the browser scaled the height
-        # from the viewBox ratio and the *viewport width*: 28px at the 240px
-        # it was drawn for, ~45px on a phone, ~180px on a laptop, where it
-        # opened a void inside the card taller than the card's own content.
-        #
-        # Equal to the viewBox height, not merely present: that is what makes
-        # the vertical scale 1:1, so a 10% reading sits at a tenth of the
-        # line's height rather than at some ratio of the window.
-        view_box_height = int(
-            re.search(r"const w = \d+, h = (\d+);", function_source("sparkline")).group(1)
-        )
-        css_height = int(re.search(r"svg \{[^}]*?height: (\d+)px", SOURCE).group(1))
-        self.assertEqual(css_height, view_box_height)
 
     def test_hosts_are_separated_more_than_the_sessions_within_one(self):
         gutter = int(
@@ -330,14 +311,6 @@ class TestTheCostIsNotDisplayed(unittest.TestCase):
 class TestNoConfidentZeroes(unittest.TestCase):
     """The page's core rule: `—` beats a figure it cannot stand behind."""
 
-    def test_sparkline_refuses_a_null_sample(self):
-        # Unreachable today only because store.py declines to append a
-        # sample with a null ctx_pct. An unguarded null plots as a
-        # confident 0%, and neither side can see that coupling.
-        body = function_source("plottable")
-        self.assertIn("ctx_pct", body)
-        self.assertIn("Number.isFinite", body)
-
 
 class TestNonNumbersNeverRenderAsFigures(unittest.TestCase):
     """The residual from finding 7, ruled in scope by the invariant.
@@ -387,88 +360,6 @@ class TestNonNumbersNeverRenderAsFigures(unittest.TestCase):
         # new Date(NaN).toLocaleTimeString() is "Invalid Date".
         self.assertIn("num(", function_source("clock"))
 
-    def test_sparkline_rejects_nan_not_merely_non_numbers(self):
-        # typeof NaN === 'number', so a typeof test would let NaN through
-        # and plot it at y = h — a confident 0% nobody reported. The guard now
-        # lives in plottable, which is the only way samples reach sparkline.
-        body = function_source("plottable")
-        self.assertIn("Number.isFinite", body)
-        self.assertNotIn("typeof", body)
-
-    def test_sparkline_draws_only_what_plottable_admits(self):
-        # The guard is only worth anything if it cannot be bypassed: sparkline
-        # must take the vetted set, never a raw history array.
-        self.assertIn("sparkline(plottable(", function_source("renderSession"))
-        self.assertNotIn("history", function_source("sparkline"))
-
-
-class TestTheSparklineSaysWhatItCovers(unittest.TestCase):
-    """The x-axis is the sample index and the line is stretched to the card's
-    full width whatever the count, so two samples twenty seconds apart drew
-    exactly the same edge-to-edge line as a full thirty-minute ring. The
-    picture could not distinguish them and neither could the reader.
-
-    Autoscaling the y-axis was the other candidate and was rejected: sessions
-    here sit at 5-30% of a 1M window, so fitting the line to its own range
-    would render a 10%-to-11% drift as a dramatic climb. Inventing alarm from
-    noise is the failure this page is built to avoid. The scale stays 0-100
-    and comparable between cards; what changed is that the line now says how
-    much time it covers, and declines to appear before it covers enough.
-    """
-
-    def test_a_line_too_short_to_show_a_trend_is_withheld(self):
-        body = function_source("plottable")
-        self.assertIn("SPARKLINE_MIN_SPAN_SECS", body)
-        self.assertIn("return null", body)
-
-    def test_the_threshold_is_several_samples_not_merely_two(self):
-        # At one sample per HISTORY_MIN_INTERVAL_SECS a threshold below about
-        # a minute would admit a handful of readings — the shape this guard
-        # exists to suppress.
-        threshold = int(
-            re.search(r"const SPARKLINE_MIN_SPAN_SECS = (\d+);", SOURCE).group(1)
-        )
-        self.assertGreaterEqual(threshold, 60)
-
-    def test_a_nan_span_is_rejected_by_the_true_branch(self):
-        # Every comparison against NaN is false, so `span < MIN` would have
-        # returned false for a NaN span and let it through to be captioned
-        # "NaNm". The test is written on the passing condition instead.
-        body = function_source("plottable")
-        self.assertIn("!(span >= SPARKLINE_MIN_SPAN_SECS)", body)
-
-    def test_a_window_in_which_nothing_moved_draws_no_line(self):
-        # A constant plots as a horizontal stroke drawn edge to edge in the
-        # tone colour, which reads as a trend when it is the absence of one --
-        # it restates the percentage above it in a form that looks like it
-        # says more. Observed: two sessions holding 10% and 14% without
-        # moving for three quarters of an hour, both drawing a confident
-        # full-width line. The line's presence is now itself the signal.
-        body = function_source("plottable")
-        self.assertIn("lo === hi", body)
-
-    def test_the_range_is_not_taken_by_spreading_the_ring(self):
-        # Math.min(...samples) spreads HISTORY_SLOTS arguments onto the stack
-        # and breaks quietly once the ring is grown.
-        body = function_source("plottable")
-        self.assertNotIn("Math.min(...", body)
-        self.assertNotIn("Math.max(...", body)
-
-    def test_the_line_is_captioned_with_the_time_it_covers(self):
-        self.assertIn("duration(plot.span)", function_source("sparkline"))
-
-    def test_the_caption_costs_the_card_no_height(self):
-        # Beside the line, not beneath it. A stacked caption would have given
-        # back the height just reclaimed by pinning the svg.
-        rule = re.search(r"\.spark \{[^}]*\}", SOURCE).group(0)
-        self.assertIn("display: flex", rule)
-        self.assertIn("align-items: center", rule)
-
-    def test_the_line_yields_width_to_the_caption_not_the_reverse(self):
-        # A flex item's floor is its content size, not zero, so without
-        # min-width:0 the caption is pushed off the card on a narrow screen.
-        rule = re.search(r"\.spark > svg \{[^}]*\}", SOURCE).group(0)
-        self.assertIn("min-width: 0", rule)
 
 
 class TestToneColorHasNoDeadTernary(unittest.TestCase):
@@ -748,7 +639,7 @@ class TestThemes(unittest.TestCase):
         self.assertIn("try", body)
 
     def test_choosing_redraws_the_cards(self):
-        # Bars and sparklines take toneColor() at render time.
+        # The bars take toneColor() at render time.
         body = function_source("chooseTheme")
         self.assertIn("applyTheme(choice)", body)
         self.assertIn("redraw()", body)
@@ -782,3 +673,12 @@ class TestEachCardSaysHowLongItHasBeenOpen(unittest.TestCase):
 
     def test_the_open_time_is_guarded(self):
         self.assertIn("duration(secs)", function_source("opened"))
+
+
+class TestNoSparkline(unittest.TestCase):
+    """2026-10-12: the user found the context sparkline not useful, and the
+    cards fit more to a screen without it."""
+
+    def test_the_card_draws_no_line(self):
+        self.assertNotIn("sparkline", function_source("renderSession"))
+        self.assertNotIn("<polyline", SOURCE)

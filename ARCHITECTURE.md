@@ -92,9 +92,9 @@ All times are measured from a record's last tick, against an injected clock in t
 | `DROP_SESSION_SECS` | 15 min | The record, its `first_seen` and its history are kept this long, but never shown past `ACTIVE_SECS`. |
 | `DROP_HOST_SECS` | 1 h | A host heading stays this long after its last tick, except the collector's own host. |
 | `RATE_LIMITS_MAX_AGE_SECS` | 15 min | The usage windows are withheld after this. |
-| `HISTORY_SLOTS` / `HISTORY_MIN_INTERVAL_SECS` | 180 / 10 s | The sparkline ring covers at least 30 minutes, and more when ticks are slower. The page captions each line with the span it actually covers. |
+| `HISTORY_SLOTS` / `HISTORY_MIN_INTERVAL_SECS` | 180 / 10 s | Each session's context history covers at least 30 minutes, and more when ticks are slower. It is still served as `history`, but since 2026-10-12 the page draws no sparkline from it. |
 
-Visibility and retention are separate on purpose. Setting `DROP_SESSION_SECS` to `ACTIVE_SECS` would draw the same page, but a laptop asleep for fifty seconds would lose its sparkline and come back as a new session. A quiet session is not shown greyed out: a card that outlives its session by minutes answers a question nobody asked. There is no `state` field, since only live sessions are served. Adding a "stale" tier back would also reintroduce the bug where "not reporting" sat above a greyed card from the same host.
+Visibility and retention are separate on purpose. Setting `DROP_SESSION_SECS` to `ACTIVE_SECS` would draw the same page, but a laptop asleep for fifty seconds would lose its history and come back as a new session. A quiet session is not shown greyed out: a card that outlives its session by minutes answers a question nobody asked. There is no `state` field, since only live sessions are served. Adding a "stale" tier back would also reintroduce the bug where "not reporting" sat above a greyed card from the same host.
 
 Distinguishing a clean exit from silence was rejected. A `Stop` hook tombstone can't fire for a killed terminal, so the timeout would still be needed, and it would save 45 seconds.
 

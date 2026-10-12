@@ -10,8 +10,6 @@ from unittest import mock
 from collector.store import (
     ACTIVE_SECS,
     DROP_SESSION_SECS,
-    HISTORY_MIN_INTERVAL_SECS,
-    HISTORY_SLOTS,
     DROP_HOST_SECS,
     MAX_HOSTS,
     MAX_SESSIONS_PER_HOST,
@@ -203,23 +201,6 @@ class TestSessionRecord(unittest.TestCase):
         self.store.ingest(envelope(host="coder-vm"), 1010)
         self.assertEqual(len(self.store.snapshot(1010)["sessions"]), 2)
 
-    def test_history_accumulates_one_sample_per_timer_tick(self):
-        # At refreshInterval: 10 every tick clears the throttle, so the
-        # heartbeat case is unaffected by the sample-rate cap.
-        self.store.ingest(envelope(), 1010)
-        self.store.ingest(envelope(), 1020)
-        history = self.store.snapshot(1020)["sessions"][0]["history"]
-        self.assertEqual(len(history), 3)
-        self.assertEqual(history[0], {"t": 1000, "ctx_pct": 27})
-
-    def test_history_is_capped_at_the_ring_size(self):
-        for tick in range(HISTORY_SLOTS + 50):
-            self.store.ingest(envelope(), 2000 + tick * HISTORY_MIN_INTERVAL_SECS)
-        history = self.store.snapshot(
-            2000 + (HISTORY_SLOTS + 50) * HISTORY_MIN_INTERVAL_SECS
-        )["sessions"][0]["history"]
-        self.assertEqual(len(history), HISTORY_SLOTS)
-
 
 class TestExpiry(unittest.TestCase):
     """Two constants, two jobs. ACTIVE_SECS is the visibility cutoff;
@@ -254,22 +235,21 @@ class TestExpiry(unittest.TestCase):
     def test_quiet_session_leaves_the_page(self):
         self.assertEqual(self.store.snapshot(1000 + ACTIVE_SECS + 1)["sessions"], [])
 
-    def test_a_session_that_returns_keeps_its_history(self):
+    def test_a_session_that_returns_keeps_its_record(self):
         # The whole argument for hiding rather than deleting, and the reason
         # this is a test and not a comment. Collapsing the two constants
         # (DROP_SESSION_SECS = ACTIVE_SECS) yields an identical page for a
-        # smaller diff -- but deleting the record also discards history and
-        # first_seen, so a laptop asleep for fifty seconds would lose an hour
-        # of sparkline and return as a stranger. If this fails, that
-        # regression has happened and it is invisible on screen.
+        # smaller diff -- but deleting the record also discards first_seen,
+        # so a laptop asleep for fifty seconds would return as a stranger. If
+        # this fails, that regression has happened and it is invisible on
+        # screen.
         self.store.snapshot(1000 + ACTIVE_SECS + 1)  # gone from the page
         self.store.ingest(envelope(), 1060)
         session = self.store.snapshot(1060)["sessions"][0]
         self.assertEqual(session["first_seen"], 1000)
-        self.assertEqual(len(session["history"]), 2)
 
     def test_quiet_session_survives_almost_to_drop_secs(self):
-        # test_a_session_that_returns_keeps_its_history only proves the
+        # test_a_session_that_returns_keeps_its_record only proves the
         # record outlives ACTIVE_SECS at t=1060 -- sixty seconds in, nowhere
         # near the fourteen-minute edge DROP_SESSION_SECS actually promises.
         # The class docstring's "two constants, two jobs" claim only holds if
@@ -612,67 +592,16 @@ class TestCtxPctTypeGuard(unittest.TestCase):
         self.assertEqual(session["ctx_pct"], 0)
 
 
-class TestHistorySampleRate(unittest.TestCase):
-    """FINDING 4. HISTORY_SLOTS claimed "30 minutes at a 10s tick", but the
-    status line also fires on events debounced at 300ms and ingest appended
-    one sample per tick. During active work the same 180-point sparkline
-    covered under two minutes, and its x-axis is index rather than time — so
-    a steep climb looked identical whether it happened over 30 minutes or 90
-    seconds, defeating the point of showing trajectory.
-    """
+class TestNoHistory(unittest.TestCase):
+    """2026-10-12: the page stopped drawing a sparkline, so the collector
+    stopped keeping the context history it was drawn from."""
 
-    def test_bursty_event_ticks_are_throttled(self):
+    def test_no_history_is_kept_or_served(self):
         store = SessionStore()
-        for i in range(100):  # 100 event ticks over ~30s, 300ms apart
-            store.ingest(envelope(), 1000 + i * 0.3)
-        history = store.snapshot(1030)["sessions"][0]["history"]
-        self.assertLessEqual(len(history), 4)
-
-    def test_samples_are_never_closer_than_the_minimum_interval(self):
-        store = SessionStore()
-        for i in range(200):
-            store.ingest(envelope(), 1000 + i * 0.3)
-        history = store.snapshot(1060)["sessions"][0]["history"]
-        gaps = [
-            b["t"] - a["t"] for a, b in zip(history, history[1:])
-        ]
-        self.assertTrue(gaps)
-        for gap in gaps:
-            self.assertGreaterEqual(gap, HISTORY_MIN_INTERVAL_SECS)
-
-    def test_a_full_ring_spans_at_least_the_advertised_window(self):
-        # The floor, and the only case in which it is also the ceiling: when
-        # ticks arrive faster than the throttle, the throttle sets the gap.
-        store = SessionStore()
-        ticks = HISTORY_SLOTS * HISTORY_MIN_INTERVAL_SECS * 2
-        for i in range(ticks):
-            store.ingest(envelope(), 1000 + i)  # 1s ticks: far faster than 10s
-        history = store.snapshot(1000 + ticks)["sessions"][0]["history"]
-        self.assertEqual(len(history), HISTORY_SLOTS)
-        span = history[-1]["t"] - history[0]["t"]
-        self.assertEqual(span, (HISTORY_SLOTS - 1) * HISTORY_MIN_INTERVAL_SECS)
-
-    def test_a_slow_tick_makes_the_ring_cover_more_than_the_advertised_window(self):
-        # The comment on HISTORY_SLOTS used to claim a flat 30 minutes
-        # "whatever rate the ticks arrive at". That is backwards: the throttle
-        # sets a *minimum* gap, so a session ticking slower than it fills the
-        # same 180 slots with proportionally more wall clock. Two live
-        # sessions ticking every ~20s and ~10s were observed covering 46 and
-        # 44 minutes, not 30.
-        #
-        # This is why the page captions each sparkline with the span it
-        # measured: the window is a property of the traffic, not a constant
-        # any reader could infer from the picture.
-        store = SessionStore()
-        gap = HISTORY_MIN_INTERVAL_SECS * 2
-        for i in range(HISTORY_SLOTS + 10):
-            store.ingest(envelope(), 1000 + i * gap)
-        now = 1000 + (HISTORY_SLOTS + 10) * gap
-        history = store.snapshot(now)["sessions"][0]["history"]
-        self.assertEqual(len(history), HISTORY_SLOTS)
-        span = history[-1]["t"] - history[0]["t"]
-        self.assertEqual(span, (HISTORY_SLOTS - 1) * gap)
-        self.assertGreater(span, HISTORY_SLOTS * HISTORY_MIN_INTERVAL_SECS)
+        store.ingest(envelope(), 1000)
+        store.ingest(envelope(), 1010)
+        self.assertNotIn("history", store.sessions[("workstation", "sess-1")])
+        self.assertNotIn("history", store.snapshot(1010)["sessions"][0])
 
 
 class TestConcurrency(unittest.TestCase):

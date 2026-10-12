@@ -7,7 +7,7 @@ exits, so a cleanly ended session and a dead tunnel are indistinguishable
 from this stream alone. Whether a quiet host is a problem is answered
 elsewhere (the server asking systemd about the tunnel), not inferred here.
 
-No persistence by design: history is measured in minutes, and a restart
+No persistence by design: everything here is current state, and a restart
 repopulates within one refreshInterval tick.
 """
 
@@ -15,33 +15,9 @@ import os
 import re
 import socket
 import threading
-from collections import deque
 
 from collector.usage import FIVE_HOUR_SECS, SEVEN_DAY_SECS, _is_number, window_pace
 
-HISTORY_MIN_INTERVAL_SECS = 10
-                             # The status line fires on events too, debounced
-                             # at 300ms, so the tick is not the clock. Without
-                             # this floor the ring filled with sub-second
-                             # samples and a "30 minute" sparkline could cover
-                             # 90 seconds — and since its x-axis is the sample
-                             # index, the two were indistinguishable on screen.
-HISTORY_SLOTS = 180          # A full ring covers *at least* HISTORY_SLOTS *
-                             # HISTORY_MIN_INTERVAL_SECS = 30 minutes, and
-                             # more whenever ticks arrive slower than that
-                             # floor — which is the ordinary case, not the
-                             # exception: two observed sessions ticking every
-                             # ~20s and ~10s filled their 180 slots with 46
-                             # and 44 minutes respectively.
-                             #
-                             # An earlier version of this comment claimed a
-                             # flat 30 minutes "whatever rate the ticks
-                             # arrive at", which is backwards — the throttle
-                             # sets a minimum gap, so the tick rate is
-                             # precisely what the coverage depends on. The
-                             # page therefore captions each line with the
-                             # span it measured rather than naming a window
-                             # this constant cannot promise.
 ACTIVE_SECS = 45             # The visibility cutoff: a card outlives its last
                              # tick by this much and no longer. ~4 missed
                              # ticks — tolerant of a slow tick, quick to
@@ -50,10 +26,10 @@ DROP_SESSION_SECS = 15 * 60  # Retention, not display. Nothing past
                              # ACTIVE_SECS is served, so this window is never
                              # on screen: it is how long a session that goes
                              # quiet and comes back is still the *same*
-                             # session, keeping its history and first_seen.
+                             # session, keeping its first_seen and started_at.
                              # Setting this to ACTIVE_SECS would draw the same
                              # page for a smaller diff and make a fifty-second
-                             # sleep wipe an hour of sparkline.
+                             # sleep return the session as a stranger.
 DROP_HOST_SECS = 60 * 60
 MAX_HOSTS = 64               # Bounds on what any writer can make the store
 MAX_SESSIONS_PER_HOST = 64   # hold. Pruning used to run only when the page
@@ -280,7 +256,7 @@ class SessionStore:
         # when the session aged out at DROP_SESSION_SECS. Storing None for
         # anything that is not a real number keeps the bad value out of the
         # store entirely, so every downstream consumer -- the sort, the
-        # history append, the page's "--" render -- can keep treating None
+        # page's "--" render -- can keep treating None
         # as the one and only "we do not have this" case, the same fix
         # already applied to rate_limits.used_percentage via this same
         # _is_number helper. bool is excluded on purpose: it is an int
@@ -366,12 +342,11 @@ class SessionStore:
         record = self.sessions.get(key)
         if record is None:
             self._make_room(host, now)
-            # first_seen and history belong to the session, not the tick, so
-            # they are set once here and never carried in `fields`.
+            # first_seen belongs to the session, not the tick, so it is set
+            # once here and never carried in `fields`.
             record = {
                 "first_seen": now,
                 "started_at": None,
-                "history": deque(maxlen=HISTORY_SLOTS),
             }
             self.sessions[key] = record
         record.update(fields)
@@ -380,14 +355,6 @@ class SessionStore:
         # within a second of each other must not swap places on a refresh.
         if record["started_at"] is None:
             record["started_at"] = started_at
-
-        if ctx_pct is not None:
-            history = record["history"]
-            if (
-                not history
-                or now - history[-1]["t"] >= HISTORY_MIN_INTERVAL_SECS
-            ):
-                history.append({"t": now, "ctx_pct": ctx_pct})
 
         rate_limits = payload.get("rate_limits")
         if isinstance(rate_limits, dict) and rate_limits:
@@ -499,7 +466,7 @@ class SessionStore:
             age = now - record["last_seen"]
             if age > ACTIVE_SECS:
                 continue
-            item = {k: v for k, v in record.items() if k != "history"}
+            item = dict(record)
             item["age_secs"] = age
             # How long the session has been open, for the card. From
             # started_at only: first_seen is when this collector first heard
@@ -508,7 +475,6 @@ class SessionStore:
                 now - record["started_at"]
                 if record["started_at"] is not None else None
             )
-            item["history"] = list(record["history"])
             sessions.append(item)
         # Grouped by host, newest session first within the host. The page
         # draws one heading per host and takes that host's sessions in the

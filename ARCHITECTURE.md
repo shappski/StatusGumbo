@@ -31,7 +31,7 @@ Claude Code
 1. Claude Code runs the status-line command on events and every `refreshInterval` seconds, with a JSON payload on stdin.
 2. The wrapper passes that payload to `~/.claude/statusgumbo-report.sh`, then to the user's saved command, so the terminal draws what it drew before.
 3. The reporter wraps the payload in an envelope `{host, branch, payload}`, plus `where` (the machine's place) and `bridge` (a Remote Control id) when known, and POSTs it to `$STATUSGUMBO_URL/ingest`. It reads the URL and token from `~/.config/statusgumbo/url` and `~/.config/statusgumbo/token` when they are not in the environment.
-4. The collector keeps one in-memory record per `(host, session_id)`, one record per host, and one account-wide rate-limit snapshot. There is no database: history covers minutes, and a restart repopulates within one tick.
+4. The collector keeps one in-memory record per `(host, session_id)`, one record per host, and one account-wide rate-limit snapshot. There is no database: everything kept is current state, and a restart repopulates within one tick.
 5. The page polls `GET /api/sessions` every 5 seconds (`REFRESH_MS`) and renders it. The response carries `now`, `rate_limits`, `rate_limits_stale_as_of`, `hosts`, `sessions`, `tunnel` and `cloud`.
 
 `branch` comes from the reporter running `git rev-parse` in the payload's `workspace.current_dir`, because the payload has no branch and the collector cannot run git on a remote machine. Rate limits are stored once, not per session, because they belong to the account: storing them per session would let two hosts disagree on screen. A payload carries the snapshot its session last received, so an idle session keeps re-sending an old one. The store therefore orders snapshots by `(resets_at, used_percentage)` and ignores one that is older than what it holds, so an idle session can't drag the page back to yesterday's window.
@@ -89,12 +89,11 @@ All times are measured from a record's last tick, against an injected clock in t
 | Constant (`collector/store.py`) | Value | Meaning |
 |---|---|---|
 | `ACTIVE_SECS` | 45 s | A session is served only this long after its last tick: about four missed 10-second ticks. |
-| `DROP_SESSION_SECS` | 15 min | The record, its `first_seen` and its history are kept this long, but never shown past `ACTIVE_SECS`. |
+| `DROP_SESSION_SECS` | 15 min | The record and its `first_seen` are kept this long, but never shown past `ACTIVE_SECS`. |
 | `DROP_HOST_SECS` | 1 h | A host heading stays this long after its last tick, except the collector's own host. |
 | `RATE_LIMITS_MAX_AGE_SECS` | 15 min | The usage windows are withheld after this. |
-| `HISTORY_SLOTS` / `HISTORY_MIN_INTERVAL_SECS` | 180 / 10 s | Each session's context history covers at least 30 minutes, and more when ticks are slower. It is still served as `history`, but since 2026-10-12 the page draws no sparkline from it. |
 
-Visibility and retention are separate on purpose. Setting `DROP_SESSION_SECS` to `ACTIVE_SECS` would draw the same page, but a laptop asleep for fifty seconds would lose its history and come back as a new session. A quiet session is not shown greyed out: a card that outlives its session by minutes answers a question nobody asked. There is no `state` field, since only live sessions are served. Adding a "stale" tier back would also reintroduce the bug where "not reporting" sat above a greyed card from the same host.
+Visibility and retention are separate on purpose. Setting `DROP_SESSION_SECS` to `ACTIVE_SECS` would draw the same page, but a laptop asleep for fifty seconds would come back as a new session. A quiet session is not shown greyed out: a card that outlives its session by minutes answers a question nobody asked. There is no `state` field, since only live sessions are served. Adding a "stale" tier back would also reintroduce the bug where "not reporting" sat above a greyed card from the same host.
 
 Distinguishing a clean exit from silence was rejected. A `Stop` hook tombstone can't fire for a killed terminal, so the timeout would still be needed, and it would save 45 seconds.
 
@@ -153,7 +152,7 @@ sh tests/test_heartbeat.sh
 sh tests/test_tunnel.sh
 ```
 
-- `test_store.py`, `test_usage.py` and `test_cloud.py` drive the store, pace maths and cloud parser with an injected clock and stubbed HTTP. Nothing sleeps. They include the case that justifies retention: a session quiet past `ACTIVE_SECS` returns with its history and `first_seen` intact.
+- `test_store.py`, `test_usage.py` and `test_cloud.py` drive the store, pace maths and cloud parser with an injected clock and stubbed HTTP. Nothing sleeps. They include the case that justifies retention: a session quiet past `ACTIVE_SECS` returns with its `first_seen` intact.
 - `test_server.py` runs real HTTP servers on loopback: auth, bind planning, the cookie swap, error codes and connection handling.
 - `test_report.sh` checks that the reporter prints nothing, returns at once when the collector is down, no-ops without `curl` or a URL, and runs the README's status-line snippet as written.
 - `test_heartbeat.sh` runs the hook under a copy of `sh` renamed `claude`, so the real ancestor search runs with no test-only override.

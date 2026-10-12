@@ -4,7 +4,7 @@
 
 Every Claude Code session you have running, on one page on your phone.
 
-<p align="center"><img src="assets/screenshot.png" alt="StatusGumbo showing two machines and a cloud section, each session as a card with its project, branch, context use, model, how long it has been open and its last tick (made-up sessions)" width="450"></p>
+<p align="center"><img src="assets/screenshot.png" alt="StatusGumbo on a phone: two machines and a cloud section, each session a card with its project, branch, context use, model, how long it has been open and its last tick (made-up sessions)" width="320"></p>
 
 Claude Code's status line only exists in the terminal that draws it. StatusGumbo
 sends each status-line tick to a small collector you run yourself and serves it

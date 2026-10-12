@@ -378,6 +378,13 @@ function age(secs) {
   return text ? text + ' ago' : '';
 }
 
+// How long a session has been open, beside how long since it last spoke.
+// Same guard as `age`: an unknown start disappears rather than reading "open".
+function opened(secs) {
+  const text = duration(secs);
+  return text ? 'open ' + text : '';
+}
+
 function tokens(n) {
   // Guarded here rather than at the two call sites: '5000' passes `>= 1000`
   // by coercion and formats as a confident "5k", and 'abc' fell through to
@@ -772,7 +779,7 @@ function renderSession(s, place) {
     // read as a bill at a glance — the one impression this page must not
     // give by accident.
     + '<div class="meta">' + [esc(s.model), esc(s.effort),
-        age(s.age_secs)].filter(Boolean).join(' · ') + '</div>');
+        opened(s.open_secs), age(s.age_secs)].filter(Boolean).join(' · ') + '</div>');
 }
 
 // status_bucket as the API sent it on 2026-09-25. An unknown value is shown
@@ -813,7 +820,8 @@ function renderCloudSession(s) {
     + (known ? 'ctx ' + Math.round(pct) + '%' : 'ctx —') + '</span>'
     + '<span class="meta">' + tokens(s.ctx_used_tokens) + (sizeText ? ' / ' + sizeText : '')
     + dated + '</span></div>'
-    + '<div class="meta">' + [esc(s.model), age(s.age_secs)].filter(Boolean).join(' · ') + '</div>');
+    + '<div class="meta">' + [esc(s.model), opened(s.open_secs),
+        age(s.age_secs)].filter(Boolean).join(' · ') + '</div>');
 }
 
 // Cloud sessions are polled from Anthropic, not reported by a host, so they

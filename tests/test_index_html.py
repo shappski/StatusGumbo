@@ -770,3 +770,15 @@ class TestTheCloudContextIsDated(unittest.TestCase):
 
     def test_an_unknown_figure_is_not_dated(self):
         self.assertIn("known ? num(s.ctx_as_of) : null", function_source("renderCloudSession"))
+
+
+class TestEachCardSaysHowLongItHasBeenOpen(unittest.TestCase):
+    """2026-10-12, at the user's request."""
+
+    def test_both_cards_show_the_open_time(self):
+        for name in ("renderSession", "renderCloudSession"):
+            with self.subTest(name=name):
+                self.assertIn("opened(s.open_secs)", function_source(name))
+
+    def test_the_open_time_is_guarded(self):
+        self.assertIn("duration(secs)", function_source("opened"))

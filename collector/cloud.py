@@ -511,6 +511,8 @@ class CloudPoller:
                     item = dict(s)
                     last = s["last_event_at"]
                     item["age_secs"] = now - last if last is not None else None
+                    created = s["created_at"]
+                    item["open_secs"] = now - created if created is not None else None
                     sessions.append(item)
             return {
                 "state": self.state,

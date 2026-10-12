@@ -1174,3 +1174,24 @@ class TestTheStoreIsBounded(unittest.TestCase):
         with self.assertRaises(ValueError):
             store.ingest(env, 1000)
         self.assertEqual(store.sessions, {})
+
+
+class TestEachSessionSaysHowLongItHasBeenOpen(unittest.TestCase):
+    """2026-10-12: the user asked for each card to show how long its session
+    has been open. started_at is the payload's own start, so the figure
+    survives a collector restart; first_seen does not, and is never used."""
+
+    def test_open_secs_counts_from_the_payload_start(self):
+        store = SessionStore()
+        env = envelope()
+        env["payload"]["cost"]["total_duration_ms"] = 3_600_000
+        store.ingest(env, T0)
+        self.assertEqual(store.snapshot(T0 + 30)["sessions"][0]["open_secs"], 3630)
+
+    def test_no_start_means_no_figure_not_first_seen(self):
+        store = SessionStore()
+        env = envelope()
+        # The fixture carries no total_duration_ms, so no start is known.
+        self.assertNotIn("total_duration_ms", env["payload"]["cost"])
+        store.ingest(env, T0)
+        self.assertIsNone(store.snapshot(T0 + 30)["sessions"][0]["open_secs"])

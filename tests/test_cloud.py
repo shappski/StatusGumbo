@@ -515,7 +515,14 @@ class TestPoller(unittest.TestCase):
         view = poller.view(NOW + 10)
         self.assertEqual(view["state"], "ok")
         self.assertEqual(view["sessions"][0]["age_secs"], 130)
+        # created_at is NOW - 3600 in raw_session.
+        self.assertEqual(view["sessions"][0]["open_secs"], 3610)
         self.assertEqual(view["as_of"], NOW)
+
+    def test_an_undated_session_has_no_open_time(self):
+        poller = self.make(FakeApi([{"data": [raw_session(created_at=None)]}]))
+        poller.poll_once()
+        self.assertIsNone(poller.view(NOW + 10)["sessions"][0]["open_secs"])
 
     def test_a_failure_keeps_the_last_list_but_says_so(self):
         api = FakeApi([{"data": [raw_session()]}])

@@ -501,6 +501,13 @@ class SessionStore:
                 continue
             item = {k: v for k, v in record.items() if k != "history"}
             item["age_secs"] = age
+            # How long the session has been open, for the card. From
+            # started_at only: first_seen is when this collector first heard
+            # of it, and after a restart that is every session at once.
+            item["open_secs"] = (
+                now - record["started_at"]
+                if record["started_at"] is not None else None
+            )
             item["history"] = list(record["history"])
             sessions.append(item)
         # Grouped by host, newest session first within the host. The page

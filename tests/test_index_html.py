@@ -694,13 +694,13 @@ class TestPinnedCardsFloatWithinTheirGroup(unittest.TestCase):
         self.assertNotIn("loadPins()", function_source("render"))
 
 
-class TheLogoShowsOnAWideScreenOnly(unittest.TestCase):
-    """On a phone the cards get every line; on a laptop there is room."""
+class TheLogoShowsOnEveryScreen(unittest.TestCase):
+    """Wide screens only until 2026-10-12, when the user asked for it on the
+    phone too."""
 
-    def test_the_header_is_hidden_unless_the_screen_is_wide(self):
-        self.assertIn(".brand { display: none; }", SOURCE)
-        wide = SOURCE[SOURCE.index("@media (min-width: 700px)"):]
-        self.assertIn("display: flex", wide[:wide.index("}\n  }")])
+    def test_the_header_is_never_hidden(self):
+        self.assertNotIn(".brand { display: none; }", SOURCE)
+        self.assertIn(".brand {\n    display: flex;", SOURCE)
 
     def test_it_uses_an_icon_the_collector_serves(self):
         self.assertIn('<header class="brand"><img src="/icons/icon-192.png"', SOURCE)

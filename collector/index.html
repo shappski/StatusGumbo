@@ -171,15 +171,12 @@
     -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   }
   #stamp { margin: 0 0 10px; }
-  /* The logo and name, on a wide screen only. On a phone the tab icon and the
-     home-screen icon already say what this is, and every line of height there
-     belongs to the cards. */
-  .brand { display: none; }
-  @media (min-width: 700px) {
-    .brand {
-      display: flex; align-items: center; gap: 10px;
-      font-size: 16px; font-weight: 700; margin: 0 0 8px;
-    }
+  /* The logo and name, on every screen. It was wide screens only, to give a
+     phone's height to the cards; on 2026-10-12 the user asked for it on the
+     phone too, as one short line is worth what it costs there. */
+  .brand {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 16px; font-weight: 700; margin: 0 0 8px;
   }
   /* Always shown, not on hover as on GitGumbo: this page is read on a phone,
      where there is no hover. The padding is the tap target and the negative

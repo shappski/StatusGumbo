@@ -67,7 +67,7 @@ The fix is in the reporter only. The collector still receives ticks and nothing 
 
 Re-sending an old payload is honest. Nothing about the session changes while it waits, and the card claims only that it is alive. The collector already refuses to let an older rate-limit snapshot replace a newer one.
 
-Rejected: a `Notification` hook, because none fires for a question and the ones that exist fire once. A "waiting" state in the collector, because it receives ticks, not sessions. A longer `ACTIVE_SECS`, because a wait has no bound and every real exit would linger. Not covered: dialogs without a hook, such as an MCP elicitation form.
+Rejected: a `Notification` hook, because none fires for a question and the ones that exist fire once. A "waiting" state in the collector, because it receives ticks, not sessions. A longer `ACTIVE_SECS`, because a wait has no bound and every real exit would linger. Not covered: dialogs without a hook, such as an MCP elicitation form; and headless `claude -p` sessions, which never run the status line, so they have no tick to cache or re-send and never appear on the page.
 
 ## Say only what is known
 

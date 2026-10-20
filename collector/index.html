@@ -321,13 +321,25 @@ function num(value) {
   return Number.isFinite(value) ? value : null;
 }
 
-// Every percentage on the page is shown to one decimal place, through this
-// one function, so no two figures disagree about their precision. Callers
-// pass only a value num() has already accepted. Budget and local-context
-// figures arrive as whole numbers and so read "58.0%"; that trailing zero is
-// what was reported, not precision added to it.
-function percent(value) {
-  return value.toFixed(1);
+// A session's context share, and how precisely it may be stated. A
+// percentage is shown to the precision its source has, never more. The token
+// counts are exact, so a share computed from them earns one decimal place.
+// Claude Code's own ctx_pct is that same share rounded to a whole number, so
+// it is the fallback when a count is missing, and it is shown whole: "8.0%"
+// would claim a tenth nobody measured, and the real figure may be 8.4.
+//
+// The budget windows have no finer source at all. Even
+// api.anthropic.com/api/oauth/usage returns 4.0 and 88.0, so they and the pace
+// derived from them stay whole.
+function contextShare(s) {
+  const used = num(s.ctx_used_tokens);
+  const size = num(s.ctx_window_size);
+  if (used !== null && size !== null && size > 0) {
+    const pct = used * 100 / size;
+    return { pct: pct, text: pct.toFixed(1) };
+  }
+  const pct = num(s.ctx_pct);
+  return pct === null ? null : { pct: pct, text: String(Math.round(pct)) };
 }
 
 function tone(pct) {
@@ -426,11 +438,10 @@ function restamp() {
 // Pace comes from the server already computed; this only phrases it.
 function paceText(pace) {
   if (num(pace) === null) return '';
-  // Decided on the formatted figure, not the raw one: -0.04 prints "0.0", and
-  // "0.0% behind" would contradict itself where "on pace" does not.
-  const shown = percent(Math.abs(pace));
-  if (Number(shown) === 0) return 'on pace';
-  return shown + (pace < 0 ? '% behind' : '% ahead');
+  const rounded = Math.round(pace);
+  if (rounded < 0) return Math.abs(rounded) + '% behind';
+  if (rounded > 0) return rounded + '% ahead';
+  return 'on pace';
 }
 
 
@@ -468,7 +479,7 @@ function renderBudget(rateLimits, staleAsOf) {
     return '<div class="row" style="margin-top:4px">'
          + '<span><span class="badge">' + label[w.name] + '</span> '
          + '<span class="pct ' + tone(pct) + '">'
-         + (pct !== null ? percent(pct) + '%' : '—') + '</span></span>'
+         + (pct !== null ? Math.round(pct) + '%' : '—') + '</span></span>'
          + '<span class="meta">' + paceText(w.pace)
          + (resets !== null ? ' · ↻' + (resetClock[w.name] || clock)(resets) : '')
          + '</span></div>';
@@ -674,9 +685,10 @@ function card(cls, url, inner) {
 function renderSession(s, place) {
   // Same rule as the budget header: an honest dash beats a confident 0%,
   // and a non-number is not a percentage however much it looks like one.
-  const pct = num(s.ctx_pct);
-  const known = pct !== null;
-  const pctText = known ? 'ctx ' + percent(pct) + '%' : 'ctx —';
+  const share = contextShare(s);
+  const known = share !== null;
+  const pct = known ? share.pct : null;
+  const pctText = known ? 'ctx ' + share.text + '%' : 'ctx —';
   const width = known ? Math.max(0, Math.min(100, pct)) : 0;
   const sizeText = tokens(s.ctx_window_size);
   const size = sizeText ? ' / ' + sizeText : '';
@@ -709,8 +721,9 @@ const CLOUD_STATES = {
 };
 
 function renderCloudSession(s) {
-  const pct = num(s.ctx_pct);
-  const known = pct !== null;
+  const share = contextShare(s);
+  const known = share !== null;
+  const pct = known ? share.pct : null;
   const width = known ? Math.max(0, Math.min(100, pct)) : 0;
   const sizeText = tokens(s.ctx_window_size);
   const state = lookup(CLOUD_STATES, s.bucket) || [s.bucket || 'unknown', 'dim'];
@@ -733,7 +746,7 @@ function renderCloudSession(s) {
     + (note ? '<div class="meta note">' + esc(note) + '</div>' : '')
     + '<div class="bar"><div style="width:' + width + '%;background:' + toneColor(pct) + '"></div></div>'
     + '<div class="row"><span class="pct ' + tone(pct) + '">'
-    + (known ? 'ctx ' + percent(pct) + '%' : 'ctx —') + '</span>'
+    + (known ? 'ctx ' + share.text + '%' : 'ctx —') + '</span>'
     + '<span class="meta">' + tokens(s.ctx_used_tokens) + (sizeText ? ' / ' + sizeText : '')
     + dated + '</span></div>'
     + '<div class="meta">' + [esc(s.model), opened(s.open_secs),

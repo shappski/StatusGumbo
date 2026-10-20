@@ -343,7 +343,10 @@ class TestNonNumbersNeverRenderAsFigures(unittest.TestCase):
         self.assertIn("num(rateLimits.as_of)", body)
 
     def test_the_session_percentage_is_guarded(self):
-        self.assertIn("num(s.ctx_pct)", function_source("renderSession"))
+        body = function_source("contextShare")
+        self.assertIn("num(s.ctx_pct)", body)
+        self.assertIn("num(s.ctx_used_tokens)", body)
+        self.assertIn("num(s.ctx_window_size)", body)
 
     def test_token_counts_are_guarded(self):
         # tokens("5000") coerced through >= and / to a confident "5k".
@@ -684,23 +687,32 @@ class TestNoSparkline(unittest.TestCase):
         self.assertNotIn("<polyline", SOURCE)
 
 
-class TestPercentagesShareOnePrecision(unittest.TestCase):
-    """Every percentage is shown to one decimal place, through percent().
 
-    A figure formatted inline could drift back to a whole number and the
-    page would then state two precisions side by side.
+class TestPercentagesClaimOnlyTheirSourcePrecision(unittest.TestCase):
+    """A percentage carries a decimal only where its source has one.
+
+    Claude Code's context and budget percentages are whole numbers, and
+    padding them to "8.0%" claimed a tenth nobody measured: one session showed
+    "9.0%" at 8.56% of its window. Context is computed from the exact token
+    counts instead. The budget has no finer source, so it and pace stay whole.
     """
 
-    def test_percent_formats_to_one_decimal(self):
-        self.assertIn("toFixed(1)", function_source("percent"))
+    def test_context_from_tokens_gets_one_decimal(self):
+        self.assertIn("toFixed(1)", function_source("contextShare"))
 
-    def test_every_percentage_site_uses_it(self):
-        for name in ("paceText", "renderBudget", "renderSession", "renderCloudSession"):
+    def test_context_without_tokens_is_whole(self):
+        self.assertIn("Math.round(pct)", function_source("contextShare"))
+
+    def test_both_session_cards_use_the_one_share(self):
+        for name in ("renderSession", "renderCloudSession"):
             with self.subTest(name):
                 body = function_source(name)
-                self.assertIn("percent(", body)
-                self.assertNotIn("Math.round", body)
+                self.assertIn("contextShare(s)", body)
+                self.assertNotIn("toFixed", body)
 
-    def test_pace_that_prints_as_zero_is_on_pace(self):
-        # -0.04 formats as "0.0"; "0.0% behind" would contradict itself.
-        self.assertIn("Number(shown) === 0", function_source("paceText"))
+    def test_budget_and_pace_are_whole(self):
+        for name in ("renderBudget", "paceText"):
+            with self.subTest(name):
+                body = function_source(name)
+                self.assertIn("Math.round", body)
+                self.assertNotIn("toFixed", body)

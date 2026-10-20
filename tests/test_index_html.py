@@ -682,3 +682,25 @@ class TestNoSparkline(unittest.TestCase):
     def test_the_card_draws_no_line(self):
         self.assertNotIn("sparkline", function_source("renderSession"))
         self.assertNotIn("<polyline", SOURCE)
+
+
+class TestPercentagesShareOnePrecision(unittest.TestCase):
+    """Every percentage is shown to one decimal place, through percent().
+
+    A figure formatted inline could drift back to a whole number and the
+    page would then state two precisions side by side.
+    """
+
+    def test_percent_formats_to_one_decimal(self):
+        self.assertIn("toFixed(1)", function_source("percent"))
+
+    def test_every_percentage_site_uses_it(self):
+        for name in ("paceText", "renderBudget", "renderSession", "renderCloudSession"):
+            with self.subTest(name):
+                body = function_source(name)
+                self.assertIn("percent(", body)
+                self.assertNotIn("Math.round", body)
+
+    def test_pace_that_prints_as_zero_is_on_pace(self):
+        # -0.04 formats as "0.0"; "0.0% behind" would contradict itself.
+        self.assertIn("Number(shown) === 0", function_source("paceText"))

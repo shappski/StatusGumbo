@@ -321,6 +321,15 @@ function num(value) {
   return Number.isFinite(value) ? value : null;
 }
 
+// Every percentage on the page is shown to one decimal place, through this
+// one function, so no two figures disagree about their precision. Callers
+// pass only a value num() has already accepted. Budget and local-context
+// figures arrive as whole numbers and so read "58.0%"; that trailing zero is
+// what was reported, not precision added to it.
+function percent(value) {
+  return value.toFixed(1);
+}
+
 function tone(pct) {
   // typeof NaN === 'number' and every comparison against NaN is false, so an
   // unguarded NaN fell through each band to 'red' — an alarm invented from
@@ -417,10 +426,11 @@ function restamp() {
 // Pace comes from the server already computed; this only phrases it.
 function paceText(pace) {
   if (num(pace) === null) return '';
-  const rounded = Math.round(pace);
-  if (rounded < 0) return Math.abs(rounded) + '% behind';
-  if (rounded > 0) return rounded + '% ahead';
-  return 'on pace';
+  // Decided on the formatted figure, not the raw one: -0.04 prints "0.0", and
+  // "0.0% behind" would contradict itself where "on pace" does not.
+  const shown = percent(Math.abs(pace));
+  if (Number(shown) === 0) return 'on pace';
+  return shown + (pace < 0 ? '% behind' : '% ahead');
 }
 
 
@@ -458,7 +468,7 @@ function renderBudget(rateLimits, staleAsOf) {
     return '<div class="row" style="margin-top:4px">'
          + '<span><span class="badge">' + label[w.name] + '</span> '
          + '<span class="pct ' + tone(pct) + '">'
-         + (pct !== null ? Math.round(pct) + '%' : '—') + '</span></span>'
+         + (pct !== null ? percent(pct) + '%' : '—') + '</span></span>'
          + '<span class="meta">' + paceText(w.pace)
          + (resets !== null ? ' · ↻' + (resetClock[w.name] || clock)(resets) : '')
          + '</span></div>';
@@ -666,7 +676,7 @@ function renderSession(s, place) {
   // and a non-number is not a percentage however much it looks like one.
   const pct = num(s.ctx_pct);
   const known = pct !== null;
-  const pctText = known ? 'ctx ' + Math.round(pct) + '%' : 'ctx —';
+  const pctText = known ? 'ctx ' + percent(pct) + '%' : 'ctx —';
   const width = known ? Math.max(0, Math.min(100, pct)) : 0;
   const sizeText = tokens(s.ctx_window_size);
   const size = sizeText ? ' / ' + sizeText : '';
@@ -723,7 +733,7 @@ function renderCloudSession(s) {
     + (note ? '<div class="meta note">' + esc(note) + '</div>' : '')
     + '<div class="bar"><div style="width:' + width + '%;background:' + toneColor(pct) + '"></div></div>'
     + '<div class="row"><span class="pct ' + tone(pct) + '">'
-    + (known ? 'ctx ' + Math.round(pct) + '%' : 'ctx —') + '</span>'
+    + (known ? 'ctx ' + percent(pct) + '%' : 'ctx —') + '</span>'
     + '<span class="meta">' + tokens(s.ctx_used_tokens) + (sizeText ? ' / ' + sizeText : '')
     + dated + '</span></div>'
     + '<div class="meta">' + [esc(s.model), opened(s.open_secs),

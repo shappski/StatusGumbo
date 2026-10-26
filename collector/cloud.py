@@ -80,6 +80,11 @@ FIRED_LOOKBACK_SECS = 60 * 24 * 3600
                              # before it fired, but can long after, so this is
                              # wider: it only spares a lookup per trigger that
                              # ever ran, which would otherwise grow for good.
+                             # The cost of it: a run still active past this
+                             # drops off the page with no line. A recurring
+                             # trigger moves last_fired_at each time it fires,
+                             # so only a one-off still in use two months on is
+                             # lost, and saying so would mean looking it up.
 QUIET_RECHECK_SECS = 15 * 60
                              # A routine session found quiet past LOOKBACK_SECS
                              # is not shown, and is asked for again only this

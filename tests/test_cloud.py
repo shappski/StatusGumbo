@@ -381,6 +381,26 @@ class TestRoutineSessions(unittest.TestCase):
             # Said once, however many triggers it hit.
             self.assertEqual(routine, "routine sessions incomplete: " + problem)
 
+    def test_a_routine_session_that_does_not_read_is_said(self):
+        # Found under its trigger but not readable as a cloud session: the
+        # card is missing all the same, so that is said, not dropped.
+        cases = [
+            raw_trigger(trigger_id="trig_2", session_id="cse_2"),
+            raw_trigger(trigger_id="trig_2", session_id="cse 2"),
+        ]
+        runs = [raw_session(id="cse_2", environment_kind="bridge"),
+                raw_session(id="cse 2")]
+        for trigger, run in zip(cases, runs):
+            api = RoutineApi(
+                triggers=[raw_trigger(), trigger],
+                by_trigger={"trig_1": [raw_session(id="cse_routine")], "trig_2": [run]},
+            )
+            with unittest.mock.patch("sys.stderr"):
+                sessions, state, routine = fetch_sessions("tok", "org", NOW, api)
+            self.assertEqual(state, "ok")
+            self.assertEqual([s["id"] for s in sessions], ["cse_routine"])
+            self.assertEqual(routine, "routine sessions incomplete: a routine's session does not read as a cloud session")
+
     def test_a_session_already_listed_is_not_looked_up_or_doubled(self):
         api = RoutineApi(listed=[raw_session(id="cse_routine")],
                          triggers=[raw_trigger()],

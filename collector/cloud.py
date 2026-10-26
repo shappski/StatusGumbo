@@ -338,9 +338,13 @@ def _routine_sessions(headers, now, skip, archived, quiet, get):
                 else:
                     parsed = parse_session(raw)
                     last = parsed and parsed["last_event_at"]
-                    if last is not None and now - last > LOOKBACK_SECS:
+                    if parsed is None:
+                        # Its trigger says it ran in the cloud, so not
+                        # reading as that is a changed response, said.
+                        problems.append("a routine's session does not read as a cloud session")
+                    elif last is not None and now - last > LOOKBACK_SECS:
                         quiet[session_id] = now
-                    elif parsed is not None:
+                    else:
                         quiet.pop(session_id, None)
                         sessions.append(parsed)
                 break

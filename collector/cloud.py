@@ -300,6 +300,13 @@ def _routine_sessions(headers, now, skip, archived, quiet, get):
             break
     if cursor or page.get("has_more") is True and not page.get("next_cursor"):
         problems.append("trigger list has more pages")
+    else:
+        # A run no trigger names any more (its trigger fired again, or is
+        # gone) is never looked up again, so its entry would stay for good.
+        named = [_dig(t, "last_run", "session_id") for t in triggers if isinstance(t, dict)]
+        named = {s for s in named if isinstance(s, str)}
+        for session_id in [s for s in quiet if s not in named]:
+            del quiet[session_id]
     for trigger in triggers:
         if not isinstance(trigger, dict):
             continue

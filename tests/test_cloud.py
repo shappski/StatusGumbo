@@ -401,6 +401,22 @@ class TestRoutineSessions(unittest.TestCase):
             self.assertEqual([s["id"] for s in sessions], ["cse_routine"])
             self.assertEqual(routine, "routine sessions incomplete: a routine's session does not read as a cloud session")
 
+    def test_the_quiet_map_keeps_only_sessions_a_trigger_still_names(self):
+        # A recurring trigger that fired again, or one dropped from the list,
+        # leaves its old run behind; kept, the map would grow for good.
+        quiet = {"cse_gone": NOW - 60, "cse_routine": NOW - 60}
+        api = RoutineApi(triggers=[raw_trigger()])
+        fetch_sessions("tok", "org", NOW, api, quiet=quiet)
+        self.assertEqual(quiet, {"cse_routine": NOW - 60})
+
+    def test_the_quiet_map_is_not_pruned_from_an_incomplete_trigger_list(self):
+        # Triggers past the last page read may still name what is in it.
+        quiet = {"cse_gone": NOW - 60}
+        api = RoutineApi(trigger_pages={None: ([], "c1"), "c1": ([], "c2"), "c2": ([], "c3")})
+        with unittest.mock.patch("sys.stderr"):
+            fetch_sessions("tok", "org", NOW, api, quiet=quiet)
+        self.assertEqual(quiet, {"cse_gone": NOW - 60})
+
     def test_a_session_already_listed_is_not_looked_up_or_doubled(self):
         api = RoutineApi(listed=[raw_session(id="cse_routine")],
                          triggers=[raw_trigger()],

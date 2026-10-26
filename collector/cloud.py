@@ -75,8 +75,9 @@ TRIGGERS_BETA = "ccr-triggers-2026-01-30"
                              # path and beta header are the ones in the 2.1.288
                              # binary; without the header the path is a 404.
 FIRED_LOOKBACK_SECS = 60 * 24 * 3600
-                             # A routine session is shown by the plain list's
-                             # rule, 14 days quiet. A run cannot be active
+                             # A routine session is hidden once quiet for
+                             # LOOKBACK_SECS (the plain list only stops paging
+                             # there, hiding nothing). A run cannot be active
                              # before it fired, but can long after, so this is
                              # wider: it only spares a lookup per trigger that
                              # ever ran, which would otherwise grow for good.

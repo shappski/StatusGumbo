@@ -188,7 +188,7 @@ class RoutineApi:
     """Answers the session list, the trigger list and per-trigger lists by URL."""
 
     def __init__(self, listed=(), triggers=(), by_trigger=None, trigger_status=200,
-                 trigger_page=None, runs_page=None, trigger_pages=None):
+                 trigger_page=None, runs_page=None, trigger_pages=None, run_fail=None):
         self.listed = list(listed)
         self.triggers = list(triggers)
         # cursor (None for the first page) -> (triggers, next_cursor)
@@ -197,6 +197,8 @@ class RoutineApi:
         self.trigger_status = trigger_status
         self.trigger_page = trigger_page or {"has_more": False}
         self.runs_page = runs_page or {}
+        # trigger id -> (status, body) answered for its runs instead
+        self.run_fail = run_fail or {}
         self.calls = []
 
     def __call__(self, url, headers):
@@ -212,6 +214,8 @@ class RoutineApi:
                 return 200, json.dumps(page).encode()
             return 200, json.dumps(dict(self.trigger_page, data=self.triggers)).encode()
         if "trigger_id" in query:
+            if query["trigger_id"][0] in self.run_fail:
+                return self.run_fail[query["trigger_id"][0]]
             data = self.by_trigger.get(query["trigger_id"][0], [])
             return 200, json.dumps(dict(self.runs_page, data=data)).encode()
         return 200, json.dumps({"data": self.listed, "next_cursor": None}).encode()
@@ -353,6 +357,28 @@ class TestRoutineSessions(unittest.TestCase):
                 sessions, state, routine = fetch_sessions("tok", "org", NOW, api)
             self.assertEqual(state, "ok")
             self.assertEqual(sessions, [])
+            self.assertEqual(routine, "routine sessions incomplete: " + problem)
+
+    def test_one_failing_run_lookup_keeps_the_routine_sessions_found(self):
+        # One trigger's runs not reading is that trigger's card missing, not
+        # every routine card: the rest were read and are shown, under the line.
+        cases = [
+            ((429, b"{}"), "a routine's runs could not be read: HTTP 429"),
+            ((200, b"not json"), "a routine's runs could not be read: unexpected response (see the collector's log)"),
+            ((200, b'{"sessions": []}'), "a routine's runs could not be read: unexpected response (see the collector's log)"),
+        ]
+        for fail, problem in cases:
+            api = RoutineApi(
+                triggers=[raw_trigger(trigger_id="trig_2", session_id="cse_2"), raw_trigger(),
+                          raw_trigger(trigger_id="trig_3", session_id="cse_3")],
+                by_trigger={"trig_1": [raw_session(id="cse_routine")]},
+                run_fail={"trig_2": fail, "trig_3": fail},
+            )
+            with unittest.mock.patch("sys.stderr"):
+                sessions, state, routine = fetch_sessions("tok", "org", NOW, api)
+            self.assertEqual(state, "ok")
+            self.assertEqual([s["id"] for s in sessions], ["cse_routine"])
+            # Said once, however many triggers it hit.
             self.assertEqual(routine, "routine sessions incomplete: " + problem)
 
     def test_a_session_already_listed_is_not_looked_up_or_doubled(self):

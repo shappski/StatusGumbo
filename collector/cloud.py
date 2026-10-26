@@ -313,7 +313,17 @@ def _routine_sessions(headers, now, skip, archived, quiet, get):
         if now - quiet.get(session_id, now - QUIET_RECHECK_SECS) < QUIET_RECHECK_SECS:
             continue
         query = urllib.parse.urlencode({"trigger_id": trigger_id, "limit": PAGE_SIZE})
-        runs, data = _get_page(get, API_URL + "?" + query, headers, "session")
+        # One trigger's runs not reading costs that trigger's card, said;
+        # only the trigger list failing leaves the routine side unknown.
+        try:
+            runs, data = _get_page(get, API_URL + "?" + query, headers, "session")
+        except ApiError as err:
+            problems.append("a routine's runs could not be read: %s" % err)
+            continue
+        except ValueError as err:
+            print("cloud poll: routines: %s: %s" % (trigger_id, err), file=sys.stderr)
+            problems.append("a routine's runs could not be read: unexpected response (see the collector's log)")
+            continue
         for raw in data:
             if isinstance(raw, dict) and raw.get("id") == session_id:
                 if raw.get("status") == "archived":

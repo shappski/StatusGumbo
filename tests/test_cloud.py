@@ -168,7 +168,7 @@ class TestFetchSessions(unittest.TestCase):
             fetch_sessions("t", "o", NOW, FakeApi([], status=429))
 
     def test_a_response_without_a_list_is_an_error_not_an_empty_list(self):
-        with self.assertRaisesRegex(ValueError, "^response has no session list$"):
+        with self.assertRaisesRegex(ApiError, "^response has no session list$"):
             fetch_sessions("t", "o", NOW, FakeApi([{"sessions": []}]))
 
 
@@ -365,7 +365,7 @@ class TestRoutineSessions(unittest.TestCase):
         cases = [
             ((429, b"{}"), "a routine's runs could not be read: HTTP 429"),
             ((200, b"not json"), "a routine's runs could not be read: unexpected response (see the collector's log)"),
-            ((200, b'{"sessions": []}'), "a routine's runs could not be read: unexpected response (see the collector's log)"),
+            ((200, b'{"sessions": []}'), "a routine's runs could not be read: response has no session list"),
         ]
         for fail, problem in cases:
             api = RoutineApi(
@@ -473,7 +473,8 @@ class TestRoutineSessions(unittest.TestCase):
             return 200, b'{"data": []}'
         with unittest.mock.patch("sys.stderr"):
             _, _, routine = fetch_sessions("tok", "org", NOW, api)
-        self.assertEqual(routine, "routine sessions unknown: unexpected response (see the collector's log)")
+        # The page says which list changed shape: the text is fixed, not the response's.
+        self.assertEqual(routine, "routine sessions unknown: response has no trigger list")
 
     def test_the_poller_serves_the_routine_line_with_its_list(self):
         api = RoutineApi(listed=[raw_session()], trigger_status=503)
@@ -655,6 +656,13 @@ class TestUntrustedApiValues(unittest.TestCase):
         raw = raw_session()
         raw["external_metadata"]["context_usage"] = {"max_tokens": 1e-300, "used_tokens": 1e300}
         self.assertIsNone(parse_session(raw)["ctx_pct"])
+
+    def test_a_list_that_changed_shape_is_named_on_the_page(self):
+        poller = CloudPoller(clock=lambda: NOW, get=FakeApi([{"sessions": []}]),
+                             login=lambda now: ("tok", "org"))
+        with unittest.mock.patch("sys.stderr"):
+            poller.poll_once()
+        self.assertEqual(poller.view(NOW)["detail"], "response has no session list")
 
     def test_an_unexpected_failure_shows_fixed_text(self):
         def api(url, headers):

@@ -112,7 +112,8 @@ def _epoch(text):
 
 
 class ApiError(Exception):
-    """The API answered with a status that is not a session list."""
+    """The API answered with something that is not the list asked for. Its
+    text is fixed, never the response's, so it is shown on the page."""
 
 
 class LoginUnavailable(Exception):
@@ -259,9 +260,10 @@ def _get_page(get, url, headers, noun):
     page = json.loads(body)
     data = page.get("data") if isinstance(page, dict) else None
     # The one shape check that matters: without a list here, "no
-    # sessions" would be a guess, so it is an error instead.
+    # sessions" would be a guess, so it is an error instead, and one the
+    # page names, so a changed endpoint is told apart from a broken one.
     if not isinstance(data, list):
-        raise ValueError("response has no %s list" % noun)
+        raise ApiError("response has no %s list" % noun)
     return page, data
 
 

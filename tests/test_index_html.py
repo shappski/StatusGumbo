@@ -439,7 +439,12 @@ class TestTheCloudSectionSaysWhichSilence(unittest.TestCase):
         body = function_source("renderCloud")
         self.assertIn("esc(cloud.routine_detail)", body)
         self.assertIn("no other cloud sessions", body)
-        self.assertIn("warning + routine + pinnedFirst(cloud.sessions", body)
+        self.assertIn("warning + routine + finished + pinnedFirst(cloud.sessions", body)
+
+    def test_hidden_finished_sessions_are_counted_not_dropped_unsaid(self):
+        body = function_source("renderCloud")
+        self.assertIn("cloud.finished_hidden", body)
+        self.assertIn("finished session", body)
 
     def test_an_unknown_state_is_shown_verbatim_not_guessed(self):
         self.assertIn("|| [s.bucket", function_source("renderCloudSession"))

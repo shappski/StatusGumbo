@@ -6,6 +6,7 @@ import unittest.mock
 import urllib.parse
 
 from collector.cloud import (
+    FINISHED_HIDE_SECS,
     FIRED_LOOKBACK_SECS,
     LOOKBACK_SECS,
     MAX_AGE_SECS,
@@ -566,6 +567,27 @@ class TestPoller(unittest.TestCase):
     def make(self, api, login=lambda now: ("tok", "org")):
         self.now = NOW
         return CloudPoller(clock=lambda: self.now, get=api, login=login)
+
+    def test_a_finished_session_quiet_past_the_cutoff_is_hidden_and_counted(self):
+        # 2026-10-26: 113 of 114 cards were review_ready runs from days ago.
+        # Only finished ones go; one working or blocked keeps the 14 days.
+        old = iso(NOW - FINISHED_HIDE_SECS - 1)
+        edge = iso(NOW - FINISHED_HIDE_SECS)
+        raws = [
+            raw_session(id="cse_done", status_bucket="review_ready", last_event_at=old),
+            raw_session(id="cse_completed", status_bucket="completed", last_event_at=old),
+            raw_session(id="cse_edge", status_bucket="review_ready", last_event_at=edge),
+            raw_session(id="cse_working", status_bucket="working", last_event_at=old),
+            raw_session(id="cse_blocked", status_bucket="blocked", last_event_at=old),
+            raw_session(id="cse_undated", status_bucket="review_ready", last_event_at=None, updated_at=None),
+        ]
+        poller = self.make(FakeApi([{"data": raws, "next_cursor": None}]))
+        poller.poll_once()
+        view = poller.view(NOW)
+        self.assertEqual(sorted(s["id"] for s in view["sessions"]),
+                         ["cse_blocked", "cse_edge", "cse_undated", "cse_working"])
+        self.assertEqual(view["finished_hidden"], 2)
+        self.assertIsNone(poller.view(NOW + MAX_AGE_SECS + 1)["finished_hidden"])
 
     def test_nothing_is_claimed_before_the_first_poll(self):
         view = self.make(FakeApi([])).view(NOW)

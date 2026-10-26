@@ -779,10 +779,16 @@ function renderCloud(cloud) {
   const routine = cloud.routine_detail
     ? '<div class="meta">' + esc(cloud.routine_detail) + '</div>'
     : '';
+  // Finished sessions quiet past the collector's cutoff are left out of the
+  // list; how many is said, so they do not vanish unsaid.
+  const hidden = num(cloud.finished_hidden);
+  const finished = hidden
+    ? '<div class="meta">' + hidden + ' finished session' + (hidden === 1 ? '' : 's') + ' hidden (quiet over 12h)</div>'
+    : '';
   if (!cloud.sessions.length) {
-    return line(routine ? 'no other cloud sessions' : 'no active cloud sessions') + warning + routine;
+    return line(routine ? 'no other cloud sessions' : 'no active cloud sessions') + warning + routine + finished;
   }
-  return head + warning + routine + pinnedFirst(cloud.sessions, cloudKey).map(renderCloudSession).join('');
+  return head + warning + routine + finished + pinnedFirst(cloud.sessions, cloudKey).map(renderCloudSession).join('');
 }
 
 function show(html) {

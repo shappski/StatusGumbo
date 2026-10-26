@@ -86,6 +86,13 @@ FIRED_LOOKBACK_SECS = 60 * 24 * 3600
                              # trigger moves last_fired_at each time it fires,
                              # so only a one-off still in use two months on is
                              # lost, and saying so would mean looking it up.
+FINISHED_HIDE_SECS = 12 * 3600
+                             # A finished session (review_ready or completed)
+                             # quiet this long is hidden from the page and
+                             # counted instead: unarchived runs pile up, and on
+                             # 2026-10-26 they were 113 of 114 cards. One still
+                             # working or blocked keeps the full LOOKBACK_SECS.
+FINISHED_BUCKETS = ("review_ready", "completed")
 QUIET_RECHECK_SECS = 15 * 60
                              # A routine session found quiet past LOOKBACK_SECS
                              # is not shown, and is asked for again only this
@@ -535,10 +542,16 @@ class CloudPoller:
         with self._lock:
             fresh = self.as_of is not None and now - self.as_of <= MAX_AGE_SECS
             sessions = []
+            hidden = 0
             if fresh:
                 for s in self.sessions:
                     item = dict(s)
                     last = s["last_event_at"]
+                    # Judged per request, so a card goes when it passes the
+                    # cutoff, not on the next poll.
+                    if s["bucket"] in FINISHED_BUCKETS and last is not None and now - last > FINISHED_HIDE_SECS:
+                        hidden += 1
+                        continue
                     item["age_secs"] = now - last if last is not None else None
                     created = s["created_at"]
                     item["open_secs"] = now - created if created is not None else None
@@ -552,6 +565,7 @@ class CloudPoller:
                 "stale_as_of": self.as_of if self.as_of is not None and not fresh else None,
                 "sessions": sessions if fresh else None,
                 "routine_detail": self.routine_detail if fresh else None,
+                "finished_hidden": hidden if fresh else None,
             }
 
     def run_forever(self):
